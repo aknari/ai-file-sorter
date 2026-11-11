@@ -50,9 +50,10 @@ TEST_CASE("FilenameLocalizationService localizes filename stems and preserves ex
     const std::string localized =
         service.localize_filename("winter_lake_scene.jpg", CategoryLanguage::French, llm);
 
-    CHECK(localized == "lac_d_hiver.jpg");
+    CHECK(localized == "lac d hiver.jpg");
     CHECK(llm.last_prompt.find("French") != std::string::npos);
     CHECK(llm.last_prompt.find("winter_lake_scene") != std::string::npos);
+    CHECK(llm.last_prompt.find("separated by spaces") != std::string::npos);
     CHECK(llm.last_prompt.find("no more than 3 words") != std::string::npos);
 }
 

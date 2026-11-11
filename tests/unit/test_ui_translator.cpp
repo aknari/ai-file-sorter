@@ -65,6 +65,8 @@ struct UiTranslatorTestHarness {
     QPointer<QCheckBox> rename_documents_only_checkbox{new QCheckBox(&window)};
     QPointer<QCheckBox> add_document_date_to_category_checkbox{new QCheckBox(&window)};
     QPointer<QToolButton> document_options_toggle_button{new QToolButton(&window)};
+    QPointer<QToolButton> document_rename_help_button{new QToolButton(&window)};
+    QPointer<QToolButton> image_rename_help_button{new QToolButton(&window)};
 
     QPointer<QStandardItemModel> tree_model{new QStandardItemModel(0, 5, &window)};
     QMenu* file_menu = new QMenu(&window);
@@ -266,7 +268,9 @@ struct UiTranslatorTestHarness {
                 offer_rename_documents_checkbox,
                 rename_documents_only_checkbox,
                 add_document_date_to_category_checkbox,
-                document_options_toggle_button},
+                document_options_toggle_button,
+                document_rename_help_button,
+                image_rename_help_button},
             .tree_model = tree_model,
             .menus = UiTranslator::MenuControls{
                 file_menu,

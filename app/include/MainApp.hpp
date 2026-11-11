@@ -1,6 +1,7 @@
 #ifndef MAINAPP_HPP
 #define MAINAPP_HPP
 
+#include "AnalysisExclusionFilter.hpp"
 #include "CategorizationDialog.hpp"
 #include "CategorizationProgressDialog.hpp"
 #include "AnalysisRuntimeLock.hpp"
@@ -248,6 +249,14 @@ private:
     void sync_whitelists_to_learning_store();
 
     void on_analyze_clicked();
+    /**
+     * @brief Opens the dialog that defines files skipped before analysis.
+     */
+    void show_analysis_exclusion_dialog();
+    /**
+     * @brief Refreshes the exclusion button label and tooltip.
+     */
+    void refresh_analysis_exclusion_button();
     void on_directory_selected(const QString& path,
         bool user_initiated = false);
     void ensure_one_checkbox_active(QCheckBox* changed_checkbox);
@@ -466,10 +475,12 @@ private:
     std::vector<CategorizedFile> new_files_with_categories;
     std::vector<FileEntry> files_to_categorize;
     std::vector<CategorizedFile> new_files_to_sort;
+    AnalysisExclusionRules analysis_exclusion_rules_;
 
     QPointer<QLineEdit> path_entry;
     QPointer<QPushButton> analyze_button;
     QPointer<QPushButton> browse_button;
+    QPointer<QPushButton> exclusion_filter_button;
     QPointer<QLabel> backend_status_label;
     QPointer<QLabel> path_label;
     QPointer<QCheckBox> use_subcategories_checkbox;
@@ -488,6 +499,7 @@ private:
     QPointer<QCheckBox> add_audio_video_metadata_to_filename_checkbox;
     QPointer<QCheckBox> offer_rename_images_checkbox;
     QPointer<QCheckBox> rename_images_only_checkbox;
+    QPointer<QToolButton> image_rename_help_button;
     QPointer<QToolButton> image_options_toggle_button;
     QPointer<QWidget> image_options_container;
     QPointer<QCheckBox> analyze_documents_checkbox;
@@ -495,6 +507,7 @@ private:
     QPointer<QCheckBox> offer_rename_documents_checkbox;
     QPointer<QCheckBox> rename_documents_only_checkbox;
     QPointer<QCheckBox> add_document_date_to_category_checkbox;
+    QPointer<QToolButton> document_rename_help_button;
     QPointer<QToolButton> document_options_toggle_button;
     QPointer<QWidget> document_options_container;
     QPointer<QTreeView> tree_view;

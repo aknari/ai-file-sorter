@@ -96,6 +96,24 @@ TEST_CASE("Zero categorized increments do not change totals or trigger prompts")
     CHECK(env.settings.get_next_support_prompt_threshold() == base_threshold);
 }
 
+TEST_CASE("Explicit support prompt opt-out suppresses future prompts") {
+    TestEnvironment env;
+    env.settings.set_support_prompt_disabled(true);
+
+    int callback_count = 0;
+    MainAppTestAccess::simulate_support_prompt(
+        env.settings,
+        env.prompt_state,
+        env.settings.get_next_support_prompt_threshold(),
+        [&](int) {
+            ++callback_count;
+            return MainAppTestAccess::SimulatedSupportResult::NotSure;
+        });
+
+    CHECK(callback_count == 0);
+    CHECK(env.settings.get_support_prompt_disabled());
+}
+
 TEST_CASE("Donation code redemption suppresses future support prompts") {
     TestEnvironment env;
     SupportCodeManager support_codes(std::filesystem::path(env.settings.get_config_dir()));

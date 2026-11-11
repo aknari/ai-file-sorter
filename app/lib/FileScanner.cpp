@@ -18,6 +18,19 @@ namespace {
 constexpr fs::directory_options kIteratorOptions =
     fs::directory_options::skip_permission_denied;
 
+const std::unordered_set<std::string>& opaque_bundle_extensions()
+{
+    static const std::unordered_set<std::string> extensions = {
+        ".app", ".utm", ".vmwarevm", ".pvm", ".vbox", ".pkg", ".mpkg",
+        ".prefPane", ".plugin", ".framework", ".kext", ".qlgenerator",
+        ".mdimporter", ".wdgt", ".scptd", ".nib", ".xib",
+        // Unpacked ebook containers should stay opaque instead of being
+        // traversed as ordinary subdirectories.
+        ".epub", ".mobi", ".azw", ".azw3", ".fb2", ".cbz", ".cbr"
+    };
+    return extensions;
+}
+
 } // namespace
 
 struct FileScanner::ScanContext {
@@ -223,20 +236,31 @@ bool FileScanner::is_additional_junk_file(const std::string& name,
 }
 
 
-bool FileScanner::is_file_bundle(const fs::path& path, bool is_directory) const {
-    static const std::unordered_set<std::string> bundle_extensions = {
-        ".app", ".utm", ".vmwarevm", ".pvm", ".vbox", ".pkg", ".mpkg",
-        ".prefPane", ".plugin", ".framework", ".kext", ".qlgenerator",
-        ".mdimporter", ".wdgt", ".scptd", ".nib", ".xib"
-    };
-    if (!is_directory) {
-        return false;
-    }
-
+bool FileScanner::has_opaque_bundle_extension(const fs::path& path)
+{
     std::string ext = Utils::path_to_utf8(path.extension());
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+    return opaque_bundle_extensions().contains(ext);
+}
 
-    return bundle_extensions.contains(ext);
+bool FileScanner::is_inside_opaque_bundle(const fs::path& path)
+{
+    fs::path parent = path.parent_path();
+    while (!parent.empty()) {
+        if (has_opaque_bundle_extension(parent)) {
+            return true;
+        }
+        const fs::path next = parent.parent_path();
+        if (next == parent) {
+            break;
+        }
+        parent = next;
+    }
+    return false;
+}
+
+bool FileScanner::is_file_bundle(const fs::path& path, bool is_directory) const {
+    return is_directory && has_opaque_bundle_extension(path);
 }
 
 std::optional<FileEntry> FileScanner::build_entry(const fs::directory_entry& entry,

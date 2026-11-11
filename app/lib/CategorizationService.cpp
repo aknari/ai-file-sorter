@@ -3,6 +3,7 @@
 #include "ArtifactCategoryPolicy.hpp"
 #include "CategorizationResponseParser.hpp"
 #include "FileCategoryPolicy.hpp"
+#include "FileScanner.hpp"
 #include "Settings.hpp"
 #include "CategoryLanguage.hpp"
 #include "DatabaseManager.hpp"
@@ -626,6 +627,16 @@ std::vector<CategorizedFile> CategorizationService::load_cached_entries(const st
     auto cached = settings.get_include_subdirectories()
         ? db_manager.get_categorized_files_recursive(directory_path)
         : db_manager.get_categorized_files(directory_path);
+
+    cached.erase(
+        std::remove_if(cached.begin(),
+                       cached.end(),
+                       [](const CategorizedFile& entry) {
+                           const auto full_path = Utils::utf8_to_path(entry.file_path) /
+                                                  Utils::utf8_to_path(entry.file_name);
+                           return FileScanner::is_inside_opaque_bundle(full_path);
+                       }),
+        cached.end());
 
     const CategoryLanguage language = settings.get_category_language();
     for (auto& entry : cached) {

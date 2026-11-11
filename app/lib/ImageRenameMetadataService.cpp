@@ -1,5 +1,6 @@
 #include "ImageRenameMetadataService.hpp"
 
+#include "FilenameTemplate.hpp"
 #include "Utils.hpp"
 #include "app_version.hpp"
 
@@ -68,6 +69,7 @@ struct TiffEntry {
 
 struct ParsedExifMetadata {
     std::optional<std::string> capture_date;
+    std::optional<std::string> capture_time;
     std::optional<double> latitude;
     std::optional<double> longitude;
 };
@@ -563,6 +565,22 @@ std::optional<std::string> normalize_exif_date_value(const std::string& value)
     return year + "-" + month + "-" + day;
 }
 
+std::optional<std::string> normalize_exif_time_value(const std::string& value)
+{
+    static const std::regex kTimePattern(R"((?:[T ])(\d{2}):(\d{2}):(\d{2}))");
+    std::smatch match;
+    if (!std::regex_search(value, match, kTimePattern)) {
+        return std::nullopt;
+    }
+    const int hour = std::stoi(match.str(1));
+    const int minute = std::stoi(match.str(2));
+    const int second = std::stoi(match.str(3));
+    if (hour > 23 || minute > 59 || second > 59) {
+        return std::nullopt;
+    }
+    return match.str(1) + match.str(2) + match.str(3);
+}
+
 ParsedExifMetadata parse_tiff_metadata(const std::vector<uint8_t>& tiff)
 {
     ParsedExifMetadata metadata;
@@ -597,6 +615,7 @@ ParsedExifMetadata parse_tiff_metadata(const std::vector<uint8_t>& tiff)
     if (const TiffEntry* dt = find_entry(ifd0_entries, kTagDateTime)) {
         if (const auto parsed = read_ascii_value(tiff, *dt)) {
             metadata.capture_date = normalize_exif_date_value(*parsed);
+            metadata.capture_time = normalize_exif_time_value(*parsed);
         }
     }
 
@@ -613,12 +632,14 @@ ParsedExifMetadata parse_tiff_metadata(const std::vector<uint8_t>& tiff)
             if (const TiffEntry* original = find_entry(exif_entries, kTagDateTimeOriginal)) {
                 if (const auto parsed = read_ascii_value(tiff, *original)) {
                     metadata.capture_date = normalize_exif_date_value(*parsed);
+                    metadata.capture_time = normalize_exif_time_value(*parsed);
                 }
             }
             if (!metadata.capture_date.has_value()) {
                 if (const TiffEntry* created = find_entry(exif_entries, kTagCreateDate)) {
                     if (const auto parsed = read_ascii_value(tiff, *created)) {
                         metadata.capture_date = normalize_exif_date_value(*parsed);
+                        metadata.capture_time = normalize_exif_time_value(*parsed);
                     }
                 }
             }
@@ -816,15 +837,18 @@ ParsedExifMetadata extract_heif_metadata_with_exiftool(const std::filesystem::pa
 
     if (const auto date = json_string_field(item, "DateTimeOriginal")) {
         metadata.capture_date = normalize_exif_date_value(*date);
+        metadata.capture_time = normalize_exif_time_value(*date);
     }
     if (!metadata.capture_date.has_value()) {
         if (const auto date = json_string_field(item, "CreateDate")) {
             metadata.capture_date = normalize_exif_date_value(*date);
+            metadata.capture_time = normalize_exif_time_value(*date);
         }
     }
     if (!metadata.capture_date.has_value()) {
         if (const auto date = json_string_field(item, "DateTime")) {
             metadata.capture_date = normalize_exif_date_value(*date);
+            metadata.capture_time = normalize_exif_time_value(*date);
         }
     }
 
@@ -975,6 +999,7 @@ ImageRenameMetadataService::ExifMetadata ImageRenameMetadataService::extract_exi
     if (exif_tiff) {
         const ParsedExifMetadata parsed = parse_tiff_metadata(*exif_tiff);
         metadata.capture_date = parsed.capture_date;
+        metadata.capture_time = parsed.capture_time;
         metadata.latitude = parsed.latitude;
         metadata.longitude = parsed.longitude;
         return metadata;
@@ -983,6 +1008,7 @@ ImageRenameMetadataService::ExifMetadata ImageRenameMetadataService::extract_exi
     if (is_heif) {
         const ParsedExifMetadata parsed = extract_heif_metadata_with_exiftool(image_path);
         metadata.capture_date = parsed.capture_date;
+        metadata.capture_time = parsed.capture_time;
         metadata.latitude = parsed.latitude;
         metadata.longitude = parsed.longitude;
     }
@@ -1182,6 +1208,68 @@ std::optional<std::string> ImageRenameMetadataService::extract_capture_date(
     const std::filesystem::path& image_path) const
 {
     return extract_exif_metadata(image_path).capture_date;
+}
+
+std::optional<std::string> ImageRenameMetadataService::extract_capture_time(
+    const std::filesystem::path& image_path) const
+{
+    return extract_exif_metadata(image_path).capture_time;
+}
+
+std::string ImageRenameMetadataService::compose_suggested_name(
+    const std::filesystem::path& image_path,
+    const std::string& subject_name,
+    const std::string& template_text,
+    bool include_date_place,
+    bool ascii_fold,
+    std::size_t max_length)
+{
+    const auto subject_path = Utils::utf8_to_path(subject_name);
+    std::string original_subject = Utils::path_to_utf8(subject_path.stem());
+    if (original_subject.empty()) {
+        original_subject = subject_name;
+    }
+    std::string extension = Utils::path_to_utf8(subject_path.extension());
+    if (extension.empty()) {
+        extension = Utils::path_to_utf8(image_path.extension());
+    }
+
+    FilenameTemplate::Fields fields;
+    fields.subject = original_subject;
+    fields.original = Utils::path_to_utf8(image_path.stem());
+
+    if (include_date_place) {
+        const ExifMetadata metadata = extract_exif_metadata(image_path);
+        fields.date = metadata.capture_date.value_or("");
+        fields.time = metadata.capture_time.value_or("");
+        if (fields.date.size() >= 4) {
+            fields.year = fields.date.substr(0, 4);
+        }
+        if (metadata.latitude.has_value() && metadata.longitude.has_value()) {
+            if (const auto place = resolve_place_prefix(*metadata.latitude, *metadata.longitude)) {
+                fields.place = *place;
+            }
+        }
+    }
+
+    FilenameTemplate::Options options;
+    options.ascii_fold = ascii_fold;
+    options.max_length = max_length == 0 ? 100 : max_length;
+
+    const std::string safe_template = FilenameTemplate::validate(template_text)
+        ? template_text
+        : std::string(FilenameTemplate::kDefaultImageTemplate);
+    std::string stem = FilenameTemplate::render(safe_template, fields, options);
+    if (stem.empty()) {
+        stem = FilenameTemplate::sanitize_component(original_subject, ascii_fold, 0);
+    }
+    if (stem.empty()) {
+        stem = FilenameTemplate::sanitize_component(fields.original, ascii_fold, 0);
+    }
+    if (stem.empty()) {
+        return subject_name;
+    }
+    return extension.empty() ? stem : stem + extension;
 }
 
 std::string ImageRenameMetadataService::apply_prefix_to_filename(

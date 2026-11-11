@@ -25,6 +25,19 @@ public:
                               FileScanOptions options,
                               const FileScannerBehavior& behavior = {}) const;
 
+    /**
+     * @brief Returns true when the path extension denotes an opaque file bundle.
+     * @param path Path to inspect.
+     * @return True for package-like directories such as .app or unpacked .epub.
+     */
+    static bool has_opaque_bundle_extension(const fs::path& path);
+    /**
+     * @brief Returns true when a path lives inside an opaque file bundle.
+     * @param path Path to inspect.
+     * @return True when any parent component is an opaque file bundle.
+     */
+    static bool is_inside_opaque_bundle(const fs::path& path);
+
 private:
     struct ScanContext;
     void scan_non_recursive(const fs::path& scan_path,

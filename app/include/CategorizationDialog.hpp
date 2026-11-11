@@ -25,6 +25,7 @@ class QModelIndex;
 class QPushButton;
 class QTableView;
 class QCheckBox;
+class QLabel;
 class QStandardItem;
 
 class CategorizationDialog : public QDialog
@@ -159,11 +160,12 @@ private:
         ColumnSelect = 0,
         ColumnFile = 1,
         ColumnType = 2,
-        ColumnSuggestedName = 3,
-        ColumnCategory = 4,
-        ColumnSubcategory = 5,
-        ColumnStatus = 6,
-        ColumnPreview = 7
+        ColumnRename = 3,
+        ColumnSuggestedName = 4,
+        ColumnCategory = 5,
+        ColumnSubcategory = 6,
+        ColumnStatus = 7,
+        ColumnPreview = 8
     };
 
     struct MoveRecord {
@@ -226,6 +228,10 @@ private:
      * @brief Selects all highlighted rows for processing.
      */
     void on_select_highlighted_clicked();
+    /**
+     * @brief Declines the suggested filename for highlighted rows while keeping them movable.
+     */
+    void on_keep_original_names_clicked();
     void apply_select_all(bool checked);
     /**
      * @brief Applies a check state to the given rows in the Process column.
@@ -320,6 +326,24 @@ private:
     std::optional<PreviewRecord> build_preview_record_for_row(int row, std::string* debug_reason = nullptr) const;
     std::string resolve_destination_name(const std::string& original_name,
                                          const std::string& rename_candidate) const;
+    /**
+     * @brief Returns whether the row's suggested filename should be applied.
+     * @param row Row index in the model.
+     * @return True when the per-row rename checkbox is checked.
+     */
+    bool row_rename_accepted(int row) const;
+    /**
+     * @brief Returns the rename candidate only when the row accepts the rename.
+     * @param row Row index in the model.
+     * @return Suggested filename when accepted, otherwise an empty string.
+     */
+    std::string effective_rename_candidate(int row) const;
+    /**
+     * @brief Keeps the per-row rename checkbox aligned with the suggested name.
+     * @param row Row index in the model.
+     * @param check_when_available True to check the box when a suggestion becomes available.
+     */
+    void sync_rename_checkbox_state(int row, bool check_when_available = false);
     bool validate_filename(const std::string& name, std::string& error) const;
     bool resolve_row_flags(int row, bool& rename_only, bool& used_consistency_hints, FileType& file_type) const;
     void set_show_rename_column(bool enabled);
@@ -380,6 +404,10 @@ private:
      */
     void update_preview_button_state();
     /**
+     * @brief Shows the full source and destination paths for the selected row.
+     */
+    void update_path_detail();
+    /**
      * @brief Opens a dialog to bulk edit categories for highlighted rows.
      */
     void on_bulk_edit_clicked();
@@ -406,10 +434,12 @@ private:
     QPushButton* continue_button{nullptr};
     QPushButton* close_button{nullptr};
     QPushButton* preview_button{nullptr};
+    QLabel* path_detail_label{nullptr};
     QCheckBox* select_all_checkbox{nullptr};
     QCheckBox* auto_approve_filenames_checkbox{nullptr};
     QCheckBox* auto_approve_categories_checkbox{nullptr};
     QPushButton* select_highlighted_button{nullptr};
+    QPushButton* keep_original_button{nullptr};
     QPushButton* bulk_edit_button{nullptr};
     QCheckBox* show_subcategories_checkbox{nullptr};
     QCheckBox* dry_run_checkbox{nullptr};

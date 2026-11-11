@@ -244,6 +244,22 @@ AnalysisRunResult AnalysisCoordinator::execute()
         return stop_requested;
     };
 
+    auto is_excluded_path = [this](const std::string& full_path) {
+        return app_.is_excluded_path && app_.is_excluded_path(full_path);
+    };
+    auto filter_excluded_entries = [this](std::vector<FileEntry>& entries) {
+        if (!app_.is_excluded_path) {
+            return;
+        }
+        entries.erase(
+            std::remove_if(entries.begin(),
+                           entries.end(),
+                           [&](const FileEntry& entry) {
+                               return app_.is_excluded_path(entry.full_path);
+                           }),
+            entries.end());
+    };
+
     app_.append_progress(to_utf8(app_.tr("[SCAN] Exploring %1")
                                      .arg(QString::fromStdString(directory_path))));
     update_stop();
@@ -526,9 +542,32 @@ AnalysisRunResult AnalysisCoordinator::execute()
             };
 
         for (const auto& cached_entry : cached_entries) {
+            const auto cached_full_path = Utils::utf8_to_path(cached_entry.file_path) /
+                                          Utils::utf8_to_path(cached_entry.file_name);
+            if (is_excluded_path(Utils::path_to_utf8(cached_full_path))) {
+                continue;
+            }
             auto entry = cached_entry;
             const bool is_image_entry = is_supported_image_entry(entry);
             const bool is_document_entry = is_supported_document_entry(entry);
+            const bool is_strict_document_entry =
+                is_document_entry && (DocumentTextAnalyzer::is_pdf(cached_full_path) ||
+                                      DocumentTextAnalyzer::is_epub(cached_full_path));
+            // PDFs and EPUBs use the strict literal extractor, so do not let the generic
+            // descriptive-name repair replace a strict result with the old filename.
+            if (is_document_entry && !is_strict_document_entry && !entry.rename_applied) {
+                const std::string repaired = DocumentTextAnalyzer::prefer_descriptive_original_name(
+                    entry.file_name, entry.suggested_name);
+                if (repaired != entry.suggested_name) {
+                    if (app_.core_logger) {
+                        app_.core_logger->info("Replaced cached suggestion '{}' with '{}' for '{}'.",
+                                               entry.suggested_name,
+                                               repaired,
+                                               entry.file_name);
+                    }
+                    entry.suggested_name = repaired;
+                }
+            }
             if (normalize_cached_date_category(entry, is_image_entry, is_document_entry)) {
                 persist_cached_date_category_cleanup(entry);
             }
@@ -607,7 +646,8 @@ AnalysisRunResult AnalysisCoordinator::execute()
                     FileEntry{Utils::path_to_utf8(full_path), entry.file_name, entry.type});
                 continue;
             }
-            if (wants_document_rename && is_document_entry && entry.suggested_name.empty() && !already_renamed) {
+            if (wants_document_rename && is_document_entry &&
+                (entry.suggested_name.empty() || is_strict_document_entry) && !already_renamed) {
                 const auto entry_index = app_.already_categorized_files.size();
                 app_.already_categorized_files.push_back(entry);
                 cached_document_indices.emplace(file_key(entry), entry_index);
@@ -705,6 +745,7 @@ AnalysisRunResult AnalysisCoordinator::execute()
                                }),
                 app_.files_to_categorize.end());
         }
+        filter_excluded_entries(app_.files_to_categorize);
         if (app_.filter_file_entries) {
             app_.filter_file_entries(app_.files_to_categorize);
         }
@@ -848,7 +889,7 @@ AnalysisRunResult AnalysisCoordinator::execute()
         std::unique_ptr<ImageRenameMetadataService> image_metadata_service;
         std::unique_ptr<MediaRenameMetadataService> media_metadata_service;
         std::unordered_map<std::string, std::string> media_rename_suggestions;
-        if (add_image_date_place_prefixes || add_image_date_to_category) {
+        if (offer_image_renames || rename_images_only || add_image_date_to_category) {
             image_metadata_service =
                 std::make_unique<ImageRenameMetadataService>(app_.settings.get_config_dir());
         }
@@ -920,6 +961,19 @@ AnalysisRunResult AnalysisCoordinator::execute()
                 }
                 return image_metadata_service->enrich_suggested_name(Utils::utf8_to_path(entry.full_path),
                                                                      raw_suggested_name);
+            };
+            auto compose_image_suggestion = [&](const FileEntry& entry,
+                                                const std::string& subject_name) {
+                if (subject_name.empty() || !image_metadata_service) {
+                    return subject_name;
+                }
+                return image_metadata_service->compose_suggested_name(
+                    Utils::utf8_to_path(entry.full_path),
+                    subject_name,
+                    app_.settings.get_image_filename_template(),
+                    add_image_date_place_prefixes,
+                    app_.settings.get_filename_template_ascii_fold(),
+                    static_cast<std::size_t>(app_.settings.get_filename_template_max_length()));
             };
             auto cache_image_date = [&](const FileEntry& entry) {
                 if (!add_image_date_to_category || !image_metadata_service) {
@@ -1234,13 +1288,13 @@ AnalysisRunResult AnalysisCoordinator::execute()
                             const auto analysis = analyzer->analyze(entry.full_path);
                             emit_visual_diagnostics(entry, analysis);
                             const std::string prompt_name = analysis.suggested_name;
-                            const std::string enriched_name = enrich_image_suggestion(entry, prompt_name);
+                            const std::string composed_name = compose_image_suggestion(entry, prompt_name);
                             const auto prompt_path = build_image_prompt_path(entry.full_path,
                                                                              prompt_name,
                                                                              analysis.description);
 
                             const std::string suggested_name =
-                                already_renamed ? std::string() : enriched_name;
+                                already_renamed ? std::string() : composed_name;
                             if (!rename_images_only) {
                                 persist_llm_suggestion_progress(entry, suggested_name);
                             }
@@ -1433,6 +1487,10 @@ AnalysisRunResult AnalysisCoordinator::execute()
 
             DocumentTextAnalyzer::Settings doc_settings;
             doc_settings.max_tokens = kDefaultDocumentOutputTokens;
+            doc_settings.filename_template = app_.settings.get_document_filename_template();
+            doc_settings.ascii_fold = app_.settings.get_filename_template_ascii_fold();
+            doc_settings.template_max_length = static_cast<std::size_t>(
+                app_.settings.get_filename_template_max_length());
             const size_t char_budget =
                 resolve_document_char_budget(app_.using_local_llm, doc_settings.max_tokens);
             doc_settings.max_characters = std::min(doc_settings.max_characters, char_budget);
@@ -1452,9 +1510,18 @@ AnalysisRunResult AnalysisCoordinator::execute()
                 if (already_renamed && rename_documents_only) {
                     continue;
                 }
+                const auto entry_path = Utils::utf8_to_path(entry.full_path);
+                const bool is_strict_document_entry =
+                    DocumentTextAnalyzer::is_pdf(entry_path) ||
+                    DocumentTextAnalyzer::is_epub(entry_path);
                 const bool document_only = cached_document_indices.contains(entry_key(entry));
                 const auto cached_suggestion_it = cached_document_suggestions.find(entry_key(entry));
-                const bool has_cached_suggestion = cached_suggestion_it != cached_document_suggestions.end();
+                // PDF/EPUB names use the strict literal extractor. Recompute them even
+                // when an older cached suggestion exists, so stale or translated names
+                // cannot win.
+                const bool has_cached_suggestion =
+                    !is_strict_document_entry &&
+                    cached_suggestion_it != cached_document_suggestions.end();
                 if (add_document_date && !document_dates.contains(entry_key(entry))) {
                     const auto date =
                         DocumentTextAnalyzer::extract_creation_date(Utils::utf8_to_path(entry.full_path));
@@ -1473,13 +1540,14 @@ AnalysisRunResult AnalysisCoordinator::execute()
                             already_renamed ? std::string() : cached_suggestion_it->second;
                         const std::string prompt_name =
                             resolve_document_prompt_name(entry.file_name, cached_suggestion_it->second);
-                        document_info.emplace(entry_key(entry),
-                                              DocumentAnalysisInfo{
-                                                  suggested_name,
-                                                  std::nullopt,
-                                                  prompt_name,
-                                                  build_document_prompt_path(entry.full_path, prompt_name, {}),
-                                                  !suggested_name.empty()});
+                        document_info.emplace(
+                            entry_key(entry),
+                            DocumentAnalysisInfo{
+                                suggested_name,
+                                std::nullopt,
+                                prompt_name,
+                                build_document_prompt_path(entry.full_path, prompt_name, {}),
+                                !suggested_name.empty()});
                         if (rename_documents_only) {
                             persist_rename_only_progress(entry, suggested_name);
                         }
@@ -1510,7 +1578,7 @@ AnalysisRunResult AnalysisCoordinator::execute()
                             std::nullopt,
                             prompt_name,
                             prompt_path,
-                            !suggested_name.empty()});
+                            !is_strict_document_entry && !suggested_name.empty()});
                     if (rename_documents_only) {
                         persist_rename_only_progress(entry, suggested_name);
                     }
@@ -1941,6 +2009,10 @@ AnalysisRunResult AnalysisCoordinator::execute()
 
                     const auto full_path = Utils::utf8_to_path(entry.file_path) /
                                            Utils::utf8_to_path(entry.file_name);
+                    if (DocumentTextAnalyzer::is_pdf(full_path) ||
+                        DocumentTextAnalyzer::is_epub(full_path)) {
+                        continue;
+                    }
                     const bool supported_for_localization =
                         LlavaImageAnalyzer::is_supported_image(full_path) ||
                         DocumentTextAnalyzer::is_supported_document(full_path) ||
@@ -1976,6 +2048,7 @@ AnalysisRunResult AnalysisCoordinator::execute()
         }
 
         auto actual_files = app_.results_coordinator.list_directory(app_.get_folder_path(), scan_options);
+        filter_excluded_entries(actual_files);
         if (app_.filter_file_entries) {
             app_.filter_file_entries(actual_files);
         }

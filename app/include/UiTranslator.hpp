@@ -65,6 +65,8 @@ public:
         QPointer<QCheckBox>& rename_documents_only_checkbox;
         QPointer<QCheckBox>& add_document_date_to_category_checkbox;
         QPointer<QToolButton>& document_options_toggle_button;
+        QPointer<QToolButton>& document_rename_help_button;
+        QPointer<QToolButton>& image_rename_help_button;
     };
 
     /**

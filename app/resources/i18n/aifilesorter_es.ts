@@ -256,6 +256,14 @@
         <translation>Tipo</translation>
     </message>
     <message>
+        <source>Use suggested name</source>
+        <translation>Usar nombre sugerido</translation>
+    </message>
+    <message>
+        <source>Uncheck to keep the original filename and still move the file.</source>
+        <translation>Desmarca para conservar el nombre original y mover el archivo igualmente.</translation>
+    </message>
+    <message>
         <location filename="../../lib/CategorizationDialog.cpp" line="2937"/>
         <source>Suggested filename</source>
         <translation>Nombre de archivo sugerido</translation>
@@ -304,6 +312,30 @@
         <location filename="../../lib/CategorizationDialog.cpp" line="2979"/>
         <source>Not selected</source>
         <translation>No seleccionado</translation>
+    </message>
+    <message>
+        <source>Keep original name</source>
+        <translation>Mantener nombre original</translation>
+    </message>
+    <message>
+        <source>Use the current filename for highlighted rows instead of the suggested rename.</source>
+        <translation>Usar el nombre actual de las filas resaltadas en lugar del nombre sugerido.</translation>
+    </message>
+    <message>
+        <source>Suggested name</source>
+        <translation>Nombre sugerido</translation>
+    </message>
+    <message>
+        <source>Original filename kept.</source>
+        <translation>Se mantiene el nombre original.</translation>
+    </message>
+    <message>
+        <source>Folder</source>
+        <translation>Carpeta</translation>
+    </message>
+    <message>
+        <source>Pending</source>
+        <translation>Pendiente</translation>
     </message>
 </context>
 <context>
@@ -1527,6 +1559,30 @@ Categorías generales esperadas:
         <source>Image analysis failed to start with the GPU backend.</source>
         <translation>No se pudo iniciar el análisis de imágenes con el backend de GPU.</translation>
     </message>
+    <message>
+        <source>Exclude…</source>
+        <translation>Excluir…</translation>
+    </message>
+    <message>
+        <source>Exclude (%1)…</source>
+        <translation>Excluir (%1)…</translation>
+    </message>
+    <message>
+        <source>Skip files by extension, subfolder, or filename before analysis.</source>
+        <translation>Omitir archivos por extensión, subcarpeta o nombre antes del análisis.</translation>
+    </message>
+    <message>
+        <source>Active exclusions: %1</source>
+        <translation>Exclusiones activas: %1</translation>
+    </message>
+    <message>
+        <source>Exclude files from analysis</source>
+        <translation>Excluir archivos del análisis</translation>
+    </message>
+    <message>
+        <source>Exclusion rules updated.</source>
+        <translation>Reglas de exclusión actualizadas.</translation>
+    </message>
 </context>
 <context>
     <name>MainWindowStateBinder</name>
@@ -2271,6 +2327,11 @@ Please update to continue. If you choose to quit, the application will close.</s
         <translation>Hay una nueva actualización disponible. Es obligatoria debido a importantes mejoras.
 Actualiza para continuar. Si eliges salir, la aplicación se cerrará.</translation>
     </message>
+    <message>
+        <location filename="../../lib/MainAppHelpActions.cpp" line="230"/>
+        <source>Filename template help</source>
+        <translation>Ayuda sobre plantillas de nombres</translation>
+    </message>
 </context>
 <context>
     <name>ReviewHistoryDialog</name>
@@ -3010,6 +3071,22 @@ Actualiza para continuar. Si eliges salir, la aplicación se cerrará.</translat
         <source>&amp;Hindi</source>
         <translation>&amp;Hindi</translation>
     </message>
+    <message>
+        <source>Show help for document filename templates</source>
+        <translation>Mostrar ayuda sobre plantillas de nombres de documentos</translation>
+    </message>
+    <message>
+        <source>Document filename template help</source>
+        <translation>Ayuda sobre plantillas de nombres de documentos</translation>
+    </message>
+    <message>
+        <source>Show help for picture filename templates</source>
+        <translation>Mostrar ayuda sobre plantillas de nombres de imágenes</translation>
+    </message>
+    <message>
+        <source>Picture filename template help</source>
+        <translation>Ayuda sobre plantillas de nombres de imágenes</translation>
+    </message>
 </context>
 <context>
     <name>WhitelistManagerDialog</name>
@@ -3042,6 +3119,49 @@ Actualiza para continuar. Si eliges salir, la aplicación se cerrará.</translat
         <location filename="../../lib/WhitelistManagerDialog.cpp" line="295"/>
         <source>The default list cannot be removed.</source>
         <translation>La lista predeterminada no se puede quitar.</translation>
+    </message>
+</context>
+<context>
+    <name>ExclusionFilterDialog</name>
+    <message>
+        <source>Exclude files from analysis</source>
+        <translation>Excluir archivos del análisis</translation>
+    </message>
+    <message>
+        <source>Files matching any rule below are skipped before analysis: they are not categorized, renamed, or moved.</source>
+        <translation>Los archivos que coincidan con alguna regla se omiten antes del análisis: no se categorizan, renombran ni mueven.</translation>
+    </message>
+    <message>
+        <source>Extensions</source>
+        <translation>Extensiones</translation>
+    </message>
+    <message>
+        <source>tmp, log, *.bak</source>
+        <translation>tmp, log, *.bak</translation>
+    </message>
+    <message>
+        <source>Subfolders</source>
+        <translation>Subcarpetas</translation>
+    </message>
+    <message>
+        <source>raw, .git, 2024/trips</source>
+        <translation>raw, .git, 2024/trips</translation>
+    </message>
+    <message>
+        <source>Name contains</source>
+        <translation>El nombre contiene</translation>
+    </message>
+    <message>
+        <source>backup, IMG_, draft</source>
+        <translation>backup, IMG_, borrador</translation>
+    </message>
+    <message>
+        <source>Separate values with commas. Matching ignores case. Subfolders are relative to the selected folder; use / to match a path.</source>
+        <translation>Separa los valores con comas. La coincidencia no distingue mayúsculas. Las subcarpetas son relativas a la carpeta seleccionada; usa / para indicar una ruta.</translation>
+    </message>
+    <message>
+        <source>Clear all</source>
+        <translation>Borrar todo</translation>
     </message>
 </context>
 </TS>

@@ -4,6 +4,7 @@
 #include "Language.hpp"
 #include "Utils.hpp"
 #include "VisualModelCatalog.hpp"
+#include "FilenameTemplate.hpp"
 #include <filesystem>
 #include <cstdio>
 #include <iostream>
@@ -416,7 +417,7 @@ bool file_exists_for_env_url(const char* env_key)
 
 
 Settings::Settings()
-    : use_subcategories(true),
+    : use_subcategories(false),
       categorize_files(true),
       categorize_directories(false),
       include_subdirectories(false),
@@ -466,6 +467,10 @@ Settings::Settings()
     analyze_images_by_content = false;
     offer_rename_images = false;
     add_image_date_place_to_filename = false;
+    document_filename_template = FilenameTemplate::kDefaultDocumentTemplate;
+    image_filename_template = FilenameTemplate::kDefaultImageTemplate;
+    filename_template_ascii_fold = true;
+    filename_template_max_length = 100;
     add_audio_video_metadata_to_filename = true;
     add_image_date_to_category = false;
     analyze_documents_by_content = false;
@@ -502,7 +507,12 @@ void Settings::load_basic_settings(const std::function<bool(const char*, bool)>&
     set_llm_storage_dir(config.getValue("Settings", "LlmStorageDir", ""));
     visual_model_id = normalize_visual_model_id(
         config.getValue("Settings", "VisualModelId", default_visual_model_descriptor().id));
-    use_subcategories = load_bool("UseSubcategories", true);
+    use_subcategories = load_bool("UseSubcategories", false);
+    // Older builds defaulted to two folder levels. Migrate that default once;
+    // users can still opt back in from the main window.
+    if (!config.hasValue("Settings", "FolderLayoutVersion")) {
+        use_subcategories = false;
+    }
     use_consistency_hints = load_bool("UseConsistencyHints", false);
     categorize_files = load_bool("CategorizeFiles", true);
     categorize_directories = load_bool("CategorizeDirectories", false);
@@ -510,6 +520,26 @@ void Settings::load_basic_settings(const std::function<bool(const char*, bool)>&
     analyze_images_by_content = load_bool("AnalyzeImagesByContent", false);
     offer_rename_images = load_bool("OfferRenameImages", false);
     add_image_date_place_to_filename = load_bool("AddImageDatePlaceToFilename", false);
+    document_filename_template = config.getValue(
+        "Settings", "DocumentFilenameTemplate", FilenameTemplate::kDefaultDocumentTemplate);
+    image_filename_template = config.getValue(
+        "Settings", "ImageFilenameTemplate", FilenameTemplate::kDefaultImageTemplate);
+    if (!FilenameTemplate::validate(document_filename_template)) {
+        document_filename_template = FilenameTemplate::kDefaultDocumentTemplate;
+    }
+    if (!FilenameTemplate::validate(image_filename_template)) {
+        image_filename_template = FilenameTemplate::kDefaultImageTemplate;
+    }
+    // Migrate the old underscore-based defaults without touching custom templates.
+    if (document_filename_template == "{date}_{type}_{subject}") {
+        document_filename_template = FilenameTemplate::kDefaultDocumentTemplate;
+    }
+    if (image_filename_template == "{date}_{place}_{subject}") {
+        image_filename_template = FilenameTemplate::kDefaultImageTemplate;
+    }
+    filename_template_ascii_fold = load_bool("FilenameTemplateAsciiFold", true);
+    filename_template_max_length = load_int("FilenameTemplateMaxLength", 100, 20);
+    filename_template_max_length = std::min(filename_template_max_length, 200);
     add_audio_video_metadata_to_filename = load_bool("AddAudioVideoMetadataToFilename", true);
     add_image_date_to_category = load_bool("AddImageDateToCategory", false);
     rename_images_only = load_bool("RenameImagesOnly", false);
@@ -562,6 +592,12 @@ void Settings::load_basic_settings(const std::function<bool(const char*, bool)>&
         load_bool("ReviewAutoApproveFilenameChanges", false);
     review_auto_approve_categorization =
         load_bool("ReviewAutoApproveCategorization", false);
+    analysis_exclusion_extensions =
+        parse_list(config.getValue("Settings", "AnalysisExcludeExtensions", ""));
+    analysis_exclusion_subfolders =
+        parse_list(config.getValue("Settings", "AnalysisExcludeSubfolders", ""));
+    analysis_exclusion_name_parts =
+        parse_list(config.getValue("Settings", "AnalysisExcludeNameParts", ""));
     skipped_version = config.getValue("Settings", "SkippedVersion", "0.0.0");
     whats_new_version_shown = config.getValue("Settings", "WhatsNewVersionShown", "");
     if (config.hasValue("Settings", "Language")) {
@@ -572,6 +608,7 @@ void Settings::load_basic_settings(const std::function<bool(const char*, bool)>&
     category_language = categoryLanguageFromString(QString::fromStdString(config.getValue("Settings", "CategoryLanguage", "English")));
     categorized_file_count = load_int("CategorizedFileCount", 0, 0);
     next_support_prompt_threshold = load_int("SupportPromptThreshold", 50, 50);
+    support_prompt_disabled = load_bool("SupportPromptDisabled", false);
     windows_explorer_extension_prompt_dismissed =
         load_bool("WindowsExplorerExtensionPromptDismissed", false);
     windows_explorer_extension_prompt_last_shown_utc =
@@ -664,6 +701,7 @@ void Settings::save_core_settings()
     config.setValue(settings_section, "LlmStorageDir", llm_storage_dir);
     config.setValue(settings_section, "VisualModelId", normalize_visual_model_id(visual_model_id));
     set_bool_setting(config, settings_section, "UseSubcategories", use_subcategories);
+    config.setValue(settings_section, "FolderLayoutVersion", std::to_string(2));
     set_bool_setting(config, settings_section, "UseConsistencyHints", use_consistency_hints);
     set_bool_setting(config, settings_section, "CategorizeFiles", categorize_files);
     set_bool_setting(config, settings_section, "CategorizeDirectories", categorize_directories);
@@ -677,6 +715,10 @@ void Settings::save_core_settings()
     set_bool_setting(config, settings_section, "AnalyzeImagesByContent", analyze_images_by_content);
     set_bool_setting(config, settings_section, "OfferRenameImages", offer_rename_images);
     set_bool_setting(config, settings_section, "AddImageDatePlaceToFilename", add_image_date_place_to_filename);
+    config.setValue(settings_section, "DocumentFilenameTemplate", document_filename_template);
+    config.setValue(settings_section, "ImageFilenameTemplate", image_filename_template);
+    set_bool_setting(config, settings_section, "FilenameTemplateAsciiFold", filename_template_ascii_fold);
+    config.setValue(settings_section, "FilenameTemplateMaxLength", std::to_string(filename_template_max_length));
     set_bool_setting(config, settings_section, "AddAudioVideoMetadataToFilename", add_audio_video_metadata_to_filename);
     set_bool_setting(config, settings_section, "AddImageDateToCategory", add_image_date_to_category);
     set_bool_setting(config, settings_section, "ImageOptionsExpanded", image_options_expanded);
@@ -713,10 +755,20 @@ void Settings::save_core_settings()
                      settings_section,
                      "ReviewAutoApproveCategorization",
                      review_auto_approve_categorization);
+    config.setValue(settings_section,
+                    "AnalysisExcludeExtensions",
+                    join_list(analysis_exclusion_extensions));
+    config.setValue(settings_section,
+                    "AnalysisExcludeSubfolders",
+                    join_list(analysis_exclusion_subfolders));
+    config.setValue(settings_section,
+                    "AnalysisExcludeNameParts",
+                    join_list(analysis_exclusion_name_parts));
     config.setValue(settings_section, "Language", languageToString(language).toStdString());
     config.setValue(settings_section, "CategoryLanguage", categoryLanguageToString(category_language).toStdString());
     config.setValue(settings_section, "CategorizedFileCount", std::to_string(categorized_file_count));
     config.setValue(settings_section, "SupportPromptThreshold", std::to_string(next_support_prompt_threshold));
+    set_bool_setting(config, settings_section, "SupportPromptDisabled", support_prompt_disabled);
     set_bool_setting(config,
                      settings_section,
                      "WindowsExplorerExtensionPromptDismissed",
@@ -1178,6 +1230,50 @@ void Settings::set_add_image_date_place_to_filename(bool value)
     add_image_date_place_to_filename = value;
 }
 
+std::string Settings::get_document_filename_template() const
+{
+    return document_filename_template;
+}
+
+void Settings::set_document_filename_template(const std::string& value)
+{
+    document_filename_template = FilenameTemplate::validate(value)
+        ? value
+        : std::string(FilenameTemplate::kDefaultDocumentTemplate);
+}
+
+std::string Settings::get_image_filename_template() const
+{
+    return image_filename_template;
+}
+
+void Settings::set_image_filename_template(const std::string& value)
+{
+    image_filename_template = FilenameTemplate::validate(value)
+        ? value
+        : std::string(FilenameTemplate::kDefaultImageTemplate);
+}
+
+bool Settings::get_filename_template_ascii_fold() const
+{
+    return filename_template_ascii_fold;
+}
+
+void Settings::set_filename_template_ascii_fold(bool value)
+{
+    filename_template_ascii_fold = value;
+}
+
+int Settings::get_filename_template_max_length() const
+{
+    return filename_template_max_length;
+}
+
+void Settings::set_filename_template_max_length(int value)
+{
+    filename_template_max_length = std::min(std::max(value, 20), 200);
+}
+
 bool Settings::get_add_audio_video_metadata_to_filename() const
 {
     return add_audio_video_metadata_to_filename;
@@ -1350,6 +1446,36 @@ void Settings::set_review_auto_approve_categorization(bool value)
     review_auto_approve_categorization = value;
 }
 
+std::vector<std::string> Settings::get_analysis_exclusion_extensions() const
+{
+    return analysis_exclusion_extensions;
+}
+
+void Settings::set_analysis_exclusion_extensions(std::vector<std::string> values)
+{
+    analysis_exclusion_extensions = std::move(values);
+}
+
+std::vector<std::string> Settings::get_analysis_exclusion_subfolders() const
+{
+    return analysis_exclusion_subfolders;
+}
+
+void Settings::set_analysis_exclusion_subfolders(std::vector<std::string> values)
+{
+    analysis_exclusion_subfolders = std::move(values);
+}
+
+std::vector<std::string> Settings::get_analysis_exclusion_name_parts() const
+{
+    return analysis_exclusion_name_parts;
+}
+
+void Settings::set_analysis_exclusion_name_parts(std::vector<std::string> values)
+{
+    analysis_exclusion_name_parts = std::move(values);
+}
+
 bool Settings::get_use_whitelist() const
 {
     return use_whitelist;
@@ -1505,6 +1631,16 @@ void Settings::set_next_support_prompt_threshold(int threshold)
         threshold = 50;
     }
     next_support_prompt_threshold = threshold;
+}
+
+bool Settings::get_support_prompt_disabled() const
+{
+    return support_prompt_disabled;
+}
+
+void Settings::set_support_prompt_disabled(bool value)
+{
+    support_prompt_disabled = value;
 }
 
 bool Settings::get_windows_explorer_extension_prompt_dismissed() const

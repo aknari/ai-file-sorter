@@ -89,7 +89,7 @@ TEST_CASE("Settings persists recent network locations") {
     CHECK(loaded.get_recent_network_locations().at(1) == "\\\\server-two\\archive");
 }
 
-TEST_CASE("Settings defaults use subcategories on when config key is missing") {
+TEST_CASE("Settings defaults to one-level category folders when config key is missing") {
     TempDir temp;
     EnvVarGuard home_guard("HOME", temp.path().string());
 #ifdef _WIN32
@@ -109,7 +109,55 @@ TEST_CASE("Settings defaults use subcategories on when config key is missing") {
 
     Settings reloaded;
     REQUIRE(reloaded.load());
-    REQUIRE(reloaded.get_use_subcategories());
+    REQUIRE_FALSE(reloaded.get_use_subcategories());
+}
+
+TEST_CASE("Settings migrates the old two-level default to one-level folders") {
+    TempDir temp;
+    EnvVarGuard home_guard("HOME", temp.path().string());
+#ifdef _WIN32
+    EnvVarGuard appdata_guard("APPDATA", temp.path().string());
+#endif
+    EnvVarGuard config_guard("AI_FILE_SORTER_CONFIG_DIR", temp.path().string());
+
+    Settings settings;
+    const std::filesystem::path config_path =
+        std::filesystem::path(settings.get_config_dir()) / "config.ini";
+
+    QSettings config(QString::fromStdString(config_path.string()), QSettings::IniFormat);
+    config.beginGroup("Settings");
+    config.setValue("UseSubcategories", true);
+    config.endGroup();
+    config.sync();
+
+    Settings reloaded;
+    REQUIRE(reloaded.load());
+    REQUIRE_FALSE(reloaded.get_use_subcategories());
+}
+
+TEST_CASE("Settings migrates legacy filename templates to spaced defaults") {
+    TempDir temp;
+    EnvVarGuard home_guard("HOME", temp.path().string());
+#ifdef _WIN32
+    EnvVarGuard appdata_guard("APPDATA", temp.path().string());
+#endif
+    EnvVarGuard config_guard("AI_FILE_SORTER_CONFIG_DIR", temp.path().string());
+
+    Settings settings;
+    const std::filesystem::path config_path =
+        std::filesystem::path(settings.get_config_dir()) / "config.ini";
+
+    QSettings config(QString::fromStdString(config_path.string()), QSettings::IniFormat);
+    config.beginGroup("Settings");
+    config.setValue("DocumentFilenameTemplate", "{date}_{type}_{subject}");
+    config.setValue("ImageFilenameTemplate", "{date}_{place}_{subject}");
+    config.endGroup();
+    config.sync();
+
+    Settings reloaded;
+    REQUIRE(reloaded.load());
+    CHECK(reloaded.get_document_filename_template() == "{date} {type} {title}");
+    CHECK(reloaded.get_image_filename_template() == "{date} {place} {subject}");
 }
 
 TEST_CASE("Settings enforces rename-only implies offer rename") {

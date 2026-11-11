@@ -22,7 +22,7 @@ USAGE
 REQUESTED_VARIANTS=()
 add_variant() {
   local value="$1"
-  for existing in "${REQUESTED_VARIANTS[@]}"; do
+  for existing in ${REQUESTED_VARIANTS[@]+"${REQUESTED_VARIANTS[@]}"}; do
     if [[ "$existing" == "$value" ]]; then
       return
     fi
@@ -260,8 +260,8 @@ DYLIB_SPECS=$(cat <<'EOF'
 libb2.1.dylib|libb2
 libbrotlicommon.1.dylib|brotli
 libbrotlidec.1.dylib|brotli
-libcrypto.3.dylib|openssl@3
-libssl.3.dylib|openssl@3
+libcrypto.4.dylib|openssl@4
+libssl.4.dylib|openssl@4
 libdouble-conversion.3.dylib|double-conversion
 libfmt.12.dylib|fmt
 libspdlog.1.16.dylib|spdlog
@@ -436,13 +436,13 @@ copy_lib() {
     shopt -u nullglob
 
     if (( ${#version_matches[@]} > 0 )); then
-      file="${version_matches[-1]}"
+      file="${version_matches[${#version_matches[@]}-1]}"
     else
       alt="$prefix/lib/${base}.dylib"
       if [[ -f "$alt" ]]; then
         file="$alt"
       elif (( ${#base_matches[@]} > 0 )); then
-        file="${base_matches[-1]}"
+        file="${base_matches[${#base_matches[@]}-1]}"
       else
         echo "Missing $lib from $formula ($file)" >&2
         exit 1
@@ -479,7 +479,10 @@ collect_macho_files() {
   if [[ -n "${MACHO_FILES_LOADED:-}" ]]; then
     return
   fi
-  mapfile -t MACHO_FILES < <(
+  MACHO_FILES=()
+  while IFS= read -r candidate; do
+    MACHO_FILES+=("$candidate")
+  done < <(
     while IFS= read -r -d '' candidate; do
       if file "$candidate" | grep -q 'Mach-O'; then
         printf '%s\n' "$candidate"
@@ -751,7 +754,10 @@ EOF
   echo "Bundle created at: $APP_BUNDLE"
 }
 
-variants=("${REQUESTED_VARIANTS[@]}")
+variants=()
+if (( ${#REQUESTED_VARIANTS[@]} > 0 )); then
+  variants=("${REQUESTED_VARIANTS[@]}")
+fi
 
 if (( ${#variants[@]} > 0 )); then
   echo "Building bundles: ${variants[*]}"

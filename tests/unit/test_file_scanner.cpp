@@ -69,6 +69,25 @@ TEST_CASE("application bundles are treated as files") {
     REQUIRE(dir_entries.empty());
 }
 
+TEST_CASE("unpacked ebook directories are treated as opaque files") {
+    TempDir temp_dir;
+    const auto ebook_dir = temp_dir.path() / "Sample.epub";
+    write_file(ebook_dir / "OEBPS" / "Images" / "cover.jpg");
+
+    FileScanner scanner;
+    const auto file_entries = scanner.get_directory_entries(
+        temp_dir.path().string(),
+        FileScanOptions::Files | FileScanOptions::Recursive);
+    REQUIRE(file_entries.size() == 1);
+    CHECK(file_entries.front().file_name == "Sample.epub");
+    CHECK(file_entries.front().type == FileType::File);
+
+    const auto dir_entries = scanner.get_directory_entries(
+        temp_dir.path().string(),
+        FileScanOptions::Directories | FileScanOptions::Recursive);
+    REQUIRE(dir_entries.empty());
+}
+
 TEST_CASE("recursive scans include nested files") {
     TempDir temp_dir;
     write_file(temp_dir.path() / "top.txt");

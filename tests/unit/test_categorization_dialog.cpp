@@ -236,9 +236,9 @@ TEST_CASE("CategorizationDialog supports sorting by columns") {
     }
 
     SECTION("Sorts by category descending") {
-        table->sortByColumn(4, Qt::DescendingOrder); // category column
-        REQUIRE(model->item(0, 4)->text() == QStringLiteral("Beta"));
-        REQUIRE(model->item(1, 4)->text() == QStringLiteral("Alpha"));
+        table->sortByColumn(5, Qt::DescendingOrder); // category column
+        REQUIRE(model->item(0, 5)->text() == QStringLiteral("Beta"));
+        REQUIRE(model->item(1, 5)->text() == QStringLiteral("Alpha"));
     }
 }
 
@@ -459,8 +459,9 @@ TEST_CASE("CategorizationDialog moves Unicode files into French nested subcatego
     const auto expected_destination =
         base / Utils::utf8_to_path("Logiciels") / Utils::utf8_to_path("Navigateur") /
         Utils::utf8_to_path(file_name);
-    const std::string expected_preview = normalized_path_text(Utils::path_to_utf8(expected_destination));
-    auto* preview_item = model->item(0, 7);
+    const std::string expected_preview = normalized_path_text(
+        "Logiciels / Navigateur / " + file_name);
+    auto* preview_item = model->item(0, 8);
     REQUIRE(preview_item != nullptr);
     const std::string preview =
         normalized_path_text(preview_item->text().toStdString());
@@ -751,8 +752,8 @@ TEST_CASE("CategorizationDialog allows editing when rename-only checkbox is off"
     auto* model = qobject_cast<QStandardItemModel*>(table->model());
     REQUIRE(model != nullptr);
 
-    CHECK(model->item(0, 4)->isEditable());
-    CHECK(model->item(1, 4)->isEditable());
+    CHECK(model->item(0, 5)->isEditable());
+    CHECK(model->item(1, 5)->isEditable());
 }
 
 TEST_CASE("CategorizationDialog deduplicates suggested names when rename-only is toggled") {
@@ -791,8 +792,8 @@ TEST_CASE("CategorizationDialog deduplicates suggested names when rename-only is
     auto* model = qobject_cast<QStandardItemModel*>(table->model());
     REQUIRE(model != nullptr);
 
-    const QString first_suggestion = model->item(0, 3)->text();
-    const QString second_suggestion = model->item(1, 3)->text();
+    const QString first_suggestion = model->item(0, 4)->text();
+    const QString second_suggestion = model->item(1, 4)->text();
 
     CHECK(first_suggestion == QStringLiteral("computer_screen_youtube_1.png"));
     CHECK(second_suggestion == QStringLiteral("computer_screen_youtube_2.png"));
@@ -821,8 +822,8 @@ TEST_CASE("CategorizationDialog avoids double suffixes for numbered suggestions"
     auto* model = qobject_cast<QStandardItemModel*>(table->model());
     REQUIRE(model != nullptr);
 
-    const QString first_suggestion = model->item(0, 3)->text();
-    const QString second_suggestion = model->item(1, 3)->text();
+    const QString first_suggestion = model->item(0, 4)->text();
+    const QString second_suggestion = model->item(1, 4)->text();
 
     CHECK(first_suggestion == QStringLiteral("computer_screen_youtube_1.png"));
     CHECK(second_suggestion == QStringLiteral("computer_screen_youtube_2.png"));
@@ -848,8 +849,72 @@ TEST_CASE("CategorizationDialog hides suggested names for renamed entries") {
     auto* model = qobject_cast<QStandardItemModel*>(table->model());
     REQUIRE(model != nullptr);
 
-    CHECK(model->item(0, 3)->text().isEmpty());
-    CHECK_FALSE(model->item(0, 3)->isEditable());
+    CHECK(model->item(0, 4)->text().isEmpty());
+    CHECK_FALSE(model->item(0, 4)->isEditable());
+}
+
+TEST_CASE("CategorizationDialog keeps original filenames on request") {
+    EnvVarGuard platform_guard("QT_QPA_PLATFORM", preferred_qt_test_platform());
+    QtAppContext qt_context;
+
+    CategorizedFile entry;
+    entry.file_path = "/tmp";
+    entry.file_name = "Project Management ToolBox.pdf";
+    entry.type = FileType::File;
+    entry.category = "Books";
+    entry.suggested_name = "notas_proyecto_ai.pdf";
+
+    TempDir undo_dir_for_dialog;
+    CategorizationDialog dialog(nullptr, false, undo_dir_for_dialog.path().string());
+    dialog.test_set_entries({entry});
+
+    auto* table = dialog.findChild<QTableView*>();
+    REQUIRE(table != nullptr);
+    auto* model = qobject_cast<QStandardItemModel*>(table->model());
+    REQUIRE(model != nullptr);
+
+    table->selectRow(0);
+    auto* button = dialog.findChild<QPushButton*>(QStringLiteral("aifsKeepOriginalNameButton"));
+    REQUIRE(button != nullptr);
+    button->click();
+
+    CHECK(model->item(0, 3)->checkState() == Qt::Unchecked);
+    CHECK(model->item(0, 4)->text() == QStringLiteral("notas_proyecto_ai.pdf"));
+}
+
+TEST_CASE("CategorizationDialog moves files without applying rejected suggested names") {
+    EnvVarGuard platform_guard("QT_QPA_PLATFORM", preferred_qt_test_platform());
+    QtAppContext qt_context;
+
+    TempDir temp_dir;
+    const std::filesystem::path base = temp_dir.path();
+    const std::string original_name = "original.txt";
+    std::ofstream(base / original_name).put('x');
+
+    CategorizedFile entry;
+    entry.file_path = base.string();
+    entry.file_name = original_name;
+    entry.type = FileType::File;
+    entry.category = "Docs";
+    entry.suggested_name = "renamed.txt";
+
+    TempDir undo_dir_for_dialog;
+    CategorizationDialog dialog(nullptr, false, undo_dir_for_dialog.path().string());
+    dialog.test_set_entries({entry});
+
+    auto* table = dialog.findChild<QTableView*>();
+    REQUIRE(table != nullptr);
+    auto* model = qobject_cast<QStandardItemModel*>(table->model());
+    REQUIRE(model != nullptr);
+
+    REQUIRE(model->item(0, 3)->checkState() == Qt::Checked);
+    REQUIRE(model->item(0, 4)->text() == QStringLiteral("renamed.txt"));
+
+    model->item(0, 3)->setCheckState(Qt::Unchecked);
+    dialog.test_trigger_confirm();
+
+    CHECK(std::filesystem::exists(base / "Docs" / original_name));
+    CHECK_FALSE(std::filesystem::exists(base / "Docs" / "renamed.txt"));
 }
 
 TEST_CASE("CategorizationDialog hides already renamed rows when rename-only is on") {
@@ -938,8 +1003,8 @@ TEST_CASE("CategorizationDialog deduplicates suggested picture filenames") {
     auto* model = qobject_cast<QStandardItemModel*>(table->model());
     REQUIRE(model != nullptr);
 
-    const QString first_suggestion = model->item(0, 3)->text();
-    const QString second_suggestion = model->item(1, 3)->text();
+    const QString first_suggestion = model->item(0, 4)->text();
+    const QString second_suggestion = model->item(1, 4)->text();
 
     CHECK(first_suggestion == QStringLiteral("sunny_barbeque_dinner_1.png"));
     CHECK(second_suggestion == QStringLiteral("sunny_barbeque_dinner_2.png"));
@@ -971,8 +1036,8 @@ TEST_CASE("CategorizationDialog deduplicates suggested media filenames") {
     auto* model = qobject_cast<QStandardItemModel*>(table->model());
     REQUIRE(model != nullptr);
 
-    const QString first_suggestion = model->item(0, 3)->text();
-    const QString second_suggestion = model->item(1, 3)->text();
+    const QString first_suggestion = model->item(0, 4)->text();
+    const QString second_suggestion = model->item(1, 4)->text();
 
     CHECK(first_suggestion == QStringLiteral("2025_videohandle_1.mp4"));
     CHECK(second_suggestion == QStringLiteral("2025_videohandle_2.mp4"));
@@ -1003,7 +1068,7 @@ TEST_CASE("CategorizationDialog avoids existing picture filename collisions") {
     auto* model = qobject_cast<QStandardItemModel*>(table->model());
     REQUIRE(model != nullptr);
 
-    const QString suggestion = model->item(0, 3)->text();
+    const QString suggestion = model->item(0, 4)->text();
     CHECK(suggestion == QStringLiteral("sunny_barbeque_dinner_1.png"));
 }
 

@@ -290,6 +290,10 @@ void MainAppTestAccess::simulate_support_prompt(Settings& settings,
         return;
     }
 
+    if (settings.get_support_prompt_disabled()) {
+        return;
+    }
+
     if (SupportCodeManager(Utils::utf8_to_path(settings.get_config_dir()))
             .is_prompt_permanently_disabled()) {
         return;

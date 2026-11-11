@@ -34,6 +34,8 @@
 #include <QMessageBox>
 #include <QStandardItem>
 #include <QStandardItemModel>
+#include <QStyledItemDelegate>
+#include <QMouseEvent>
 #include <QStringList>
 #include <QShortcut>
 #include <QTableView>
@@ -43,6 +45,7 @@
 #include <QFileIconProvider>
 #include <QFileInfo>
 #include <QPainter>
+#include <QPainterPath>
 #include <QPen>
 #include <QPixmap>
 #include <QPolygonF>
@@ -65,6 +68,7 @@
 #include <chrono>
 #include <unordered_map>
 #include <unordered_set>
+#include <system_error>
 
 namespace {
 
@@ -83,6 +87,107 @@ struct ScopedFlag {
     bool& ref;
     explicit ScopedFlag(bool& target) : ref(target) { ref = true; }
     ~ScopedFlag() { ref = false; }
+};
+
+// The native macOS style only paints item-view check indicators for the first
+// row of a table, so the per-row selection boxes were effectively invisible.
+// Draw them explicitly instead of relying on the platform style.
+class ReviewCheckBoxDelegate final : public QStyledItemDelegate {
+public:
+    explicit ReviewCheckBoxDelegate(int column, QObject* parent = nullptr)
+        : QStyledItemDelegate(parent), column_(column)
+    {
+    }
+
+    void paint(QPainter* painter,
+               const QStyleOptionViewItem& option,
+               const QModelIndex& index) const override
+    {
+        if (!painter || index.column() != column_) {
+            QStyledItemDelegate::paint(painter, option, index);
+            return;
+        }
+
+        QStyleOptionViewItem opt(option);
+        initStyleOption(&opt, index);
+        opt.text.clear();
+        opt.icon = QIcon();
+        opt.features &= ~QStyleOptionViewItem::HasCheckIndicator;
+
+        const QWidget* widget = opt.widget;
+        QStyle* style = widget ? widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &opt, painter, widget);
+
+        const QVariant check_state = index.data(Qt::CheckStateRole);
+        if (!check_state.isValid()) {
+            return;
+        }
+
+        const int state = check_state.toInt();
+        const bool checked = state == Qt::Checked;
+        const bool partial = state == Qt::PartiallyChecked;
+        const bool enabled = (opt.state & QStyle::State_Enabled) != 0;
+
+        constexpr int side = 16;
+        const QRect box(opt.rect.left() + 8,
+                        opt.rect.top() + (opt.rect.height() - side) / 2,
+                        side,
+                        side);
+
+        QColor accent = opt.palette.color(QPalette::Highlight);
+        QColor border = opt.palette.color(QPalette::Text);
+        border.setAlpha(enabled ? 160 : 80);
+        if (!enabled) {
+            accent.setAlpha(100);
+        }
+        const QColor check_color = accent.lightness() > 150
+            ? opt.palette.color(QPalette::Text)
+            : QColor(Qt::white);
+
+        painter->save();
+        painter->setRenderHint(QPainter::Antialiasing, true);
+        painter->setPen(QPen(checked || partial ? accent : border, 1.3));
+        painter->setBrush(checked || partial ? QBrush(accent) : QBrush(Qt::NoBrush));
+        painter->drawRoundedRect(QRectF(box).adjusted(0.5, 0.5, -0.5, -0.5), 3.0, 3.0);
+
+        if (checked) {
+            QPainterPath check_path;
+            check_path.moveTo(box.left() + 4.0, box.center().y() + 0.5);
+            check_path.lineTo(box.left() + 6.8, box.bottom() - 4.2);
+            check_path.lineTo(box.right() - 3.8, box.top() + 4.4);
+            painter->setPen(QPen(check_color, 1.8, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            painter->setBrush(Qt::NoBrush);
+            painter->drawPath(check_path);
+        } else if (partial) {
+            painter->setPen(QPen(check_color, 1.8, Qt::SolidLine, Qt::RoundCap));
+            painter->drawLine(QPointF(box.left() + 4.5, box.center().y()),
+                              QPointF(box.right() - 4.5, box.center().y()));
+        }
+
+        painter->restore();
+    }
+
+    bool editorEvent(QEvent* event,
+                     QAbstractItemModel* model,
+                     const QStyleOptionViewItem& option,
+                     const QModelIndex& index) override
+    {
+        if (event && index.column() == column_ && event->type() == QEvent::MouseButtonRelease) {
+            auto* mouse_event = static_cast<QMouseEvent*>(event);
+            if (mouse_event->button() == Qt::LeftButton &&
+                option.rect.contains(mouse_event->position().toPoint())) {
+                const int state = index.data(Qt::CheckStateRole).toInt();
+                model->setData(index,
+                               state == Qt::Checked ? Qt::Unchecked : Qt::Checked,
+                               Qt::CheckStateRole);
+                return true;
+            }
+        }
+        return QStyledItemDelegate::editorEvent(event, model, option, index);
+    }
+
+private:
+    int column_{0};
 };
 
 QString edit_icon_html(int size = 16);
@@ -114,6 +219,35 @@ std::string read_item_or_hidden_text(const QStandardItem* item, int hidden_role)
     }
 
     return std::string();
+}
+
+std::string display_destination_path(const std::string& full_path,
+                                     const std::string& base_dir)
+{
+    if (base_dir.empty()) {
+        return full_path;
+    }
+
+    std::error_code ec;
+    const auto relative = std::filesystem::relative(Utils::utf8_to_path(full_path),
+                                                    Utils::utf8_to_path(base_dir),
+                                                    ec);
+    if (ec || relative.empty()) {
+        return full_path;
+    }
+    const std::string relative_text = Utils::path_to_utf8(relative);
+    if (relative_text.rfind("..", 0) == 0) {
+        return full_path;
+    }
+
+    std::string pretty;
+    for (const auto& part : relative) {
+        if (!pretty.empty()) {
+            pretty += " / ";
+        }
+        pretty += Utils::path_to_utf8(part);
+    }
+    return pretty.empty() ? full_path : pretty;
 }
 
 } // namespace
@@ -169,7 +303,7 @@ CategorizationDialog::CategorizationDialog(DatabaseManager* db_manager,
       undo_dir_(undo_dir),
       preview_service_(create_file_preview_service())
 {
-    resize(1100, 720);
+    resize(1320, 820);
     setSizeGripEnabled(true);
     Qt::WindowFlags flags = windowFlags();
     flags &= ~Qt::WindowType_Mask;
@@ -324,12 +458,15 @@ void CategorizationDialog::setup_ui()
     auto_approve_categories_checkbox = new QCheckBox(this);
     auto_approve_categories_checkbox->setChecked(auto_approve_categorization_);
     select_highlighted_button = new QPushButton(this);
+    keep_original_button = new QPushButton(this);
+    keep_original_button->setObjectName(QStringLiteral("aifsKeepOriginalNameButton"));
     bulk_edit_button = new QPushButton(this);
 
     select_layout->addWidget(select_all_checkbox);
     select_layout->addWidget(auto_approve_filenames_checkbox);
     select_layout->addWidget(auto_approve_categories_checkbox);
     select_layout->addWidget(select_highlighted_button);
+    select_layout->addWidget(keep_original_button);
     select_layout->addWidget(bulk_edit_button);
     select_layout->addStretch(1);
     scroll_layout->addLayout(select_layout);
@@ -353,7 +490,7 @@ void CategorizationDialog::setup_ui()
     scroll_layout->addWidget(rename_documents_only_checkbox);
 
     model = new QStandardItemModel(this);
-    model->setColumnCount(8);
+    model->setColumnCount(9);
 
     table_view = new QTableView(this);
     table_view->setObjectName(QStringLiteral("aifsReviewTable"));
@@ -367,14 +504,24 @@ void CategorizationDialog::setup_ui()
     table_view->horizontalHeader()->setSortIndicatorShown(true);
     table_view->setSortingEnabled(true);
     table_view->setAlternatingRowColors(true);
+    table_view->setShowGrid(false);
     table_view->setFrameShape(QFrame::NoFrame);
+    table_view->setWordWrap(true);
+    table_view->setTextElideMode(Qt::ElideMiddle);
+    table_view->horizontalHeader()->setMinimumSectionSize(60);
     table_view->setColumnHidden(ColumnType, false);
+    table_view->setColumnHidden(ColumnRename, !show_rename_column);
     table_view->setColumnHidden(ColumnSuggestedName, !show_rename_column);
     table_view->setColumnHidden(ColumnSubcategory, !show_subcategory_column);
     table_view->setColumnHidden(ColumnPreview, false);
-    table_view->setColumnWidth(ColumnSelect, 70);
+    table_view->setColumnWidth(ColumnSelect, 64);
+    table_view->setColumnWidth(ColumnRename, 96);
+    table_view->setItemDelegateForColumn(ColumnSelect,
+                                         new ReviewCheckBoxDelegate(ColumnSelect, table_view));
+    table_view->setItemDelegateForColumn(ColumnRename,
+                                         new ReviewCheckBoxDelegate(ColumnRename, table_view));
     table_view->setIconSize(QSize(16, 16));
-    table_view->setColumnWidth(ColumnType, table_view->iconSize().width() + 12);
+    table_view->setColumnWidth(ColumnType, 64);
 
     auto* table_panel = new QFrame(this);
     table_panel->setObjectName(QStringLiteral("aifsReviewTablePanel"));
@@ -383,6 +530,14 @@ void CategorizationDialog::setup_ui()
     table_panel_layout->setSpacing(0);
     table_panel_layout->addWidget(table_view);
     scroll_layout->addWidget(table_panel, 1);
+
+    path_detail_label = new QLabel(this);
+    path_detail_label->setObjectName(QStringLiteral("aifsReviewPathDetail"));
+    path_detail_label->setWordWrap(true);
+    path_detail_label->setTextFormat(Qt::PlainText);
+    path_detail_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    path_detail_label->setContentsMargins(8, 4, 8, 4);
+    scroll_layout->addWidget(path_detail_label);
 
     auto* tip_label = new QLabel(this);
     tip_label->setWordWrap(true);
@@ -450,6 +605,7 @@ void CategorizationDialog::setup_ui()
     connect(auto_approve_categories_checkbox, &QCheckBox::toggled,
             this, &CategorizationDialog::on_auto_approve_categorization_toggled);
     connect(select_highlighted_button, &QPushButton::clicked, this, &CategorizationDialog::on_select_highlighted_clicked);
+    connect(keep_original_button, &QPushButton::clicked, this, &CategorizationDialog::on_keep_original_names_clicked);
     connect(bulk_edit_button, &QPushButton::clicked, this, &CategorizationDialog::on_bulk_edit_clicked);
     connect(model, &QStandardItemModel::itemChanged, this, &CategorizationDialog::on_item_changed);
     connect(table_view, &QTableView::doubleClicked, this, &CategorizationDialog::on_table_double_clicked);
@@ -468,7 +624,10 @@ void CategorizationDialog::setup_ui()
         connect(table_view->selectionModel(),
                 &QItemSelectionModel::selectionChanged,
                 this,
-                [this]() { update_preview_button_state(); });
+                [this]() {
+                    update_preview_button_state();
+                    update_path_detail();
+                });
     }
 }
 
@@ -555,6 +714,18 @@ bool icons_match(const QIcon& left, const QIcon& right, const QSize& size)
 }
 #endif
 
+QString file_type_label(const QString& code, const QString& file_name)
+{
+    if (code == QStringLiteral("D")) {
+        return QCoreApplication::translate("CategorizationDialog", "Folder");
+    }
+    const QString suffix = QFileInfo(file_name).suffix().toUpper();
+    if (!suffix.isEmpty()) {
+        return suffix;
+    }
+    return QCoreApplication::translate("CategorizationDialog", "File");
+}
+
 QIcon type_icon(const QString& code, const QString& file_path)
 {
     if (auto* style = QApplication::style()) {
@@ -635,7 +806,7 @@ void CategorizationDialog::ensure_unique_suggested_names_in_model()
     for (int row = 0; row < model->rowCount(); ++row) {
         auto* file_item = model->item(row, ColumnFile);
         auto* rename_item = model->item(row, ColumnSuggestedName);
-        if (!file_item || !rename_item) {
+        if (!file_item || !rename_item || !row_rename_accepted(row)) {
             continue;
         }
         const std::string suggested = rename_item->text().toStdString();
@@ -689,9 +860,8 @@ void CategorizationDialog::populate_model()
     ScopedFlag guard(suppress_item_changed_);
     model->removeRows(0, model->rowCount());
 
-    const int type_col_width = table_view ? table_view->iconSize().width() + 12 : 28;
     if (table_view) {
-        table_view->setColumnWidth(2, type_col_width);
+        table_view->setColumnWidth(ColumnType, 64);
     }
 
     updating_select_all = true;
@@ -713,6 +883,11 @@ void CategorizationDialog::populate_model()
         file_item->setData(file.rename_only, kRenameOnlyRole);
         file_item->setData(static_cast<int>(file.type), kFileTypeRole);
         file_item->setData(QString::fromStdString(file.learning_context), kLearningContextRole);
+        const std::string source_dir = file.file_path.empty() ? base_dir_ : file.file_path;
+        if (!source_dir.empty()) {
+            const auto source_path = Utils::utf8_to_path(source_dir) / Utils::utf8_to_path(file.file_name);
+            file_item->setToolTip(QString::fromStdString(Utils::path_to_utf8(source_path)));
+        }
         const bool rename_locked = file.rename_applied ||
                                    (!file.suggested_name.empty() &&
                                     to_lower_copy_str(file.suggested_name) == to_lower_copy_str(file.file_name));
@@ -723,13 +898,14 @@ void CategorizationDialog::populate_model()
 
         auto* type_item = new QStandardItem;
         type_item->setEditable(false);
+        QString type_code = QStringLiteral("F");
         if (file.type == FileType::Directory) {
-            type_item->setData(QStringLiteral("D"), Qt::UserRole);
+            type_code = QStringLiteral("D");
         } else if (is_image_entry) {
-            type_item->setData(QStringLiteral("I"), Qt::UserRole);
-        } else {
-            type_item->setData(QStringLiteral("F"), Qt::UserRole);
+            type_code = QStringLiteral("I");
         }
+        type_item->setData(type_code, Qt::UserRole);
+        type_item->setText(file_type_label(type_code, QString::fromStdString(file.file_name)));
         type_item->setData(Qt::AlignCenter, Qt::TextAlignmentRole);
         update_type_icon(type_item);
 
@@ -740,6 +916,15 @@ void CategorizationDialog::populate_model()
         if (allow_rename) {
             suggested_item->setIcon(edit_icon());
         }
+
+        auto* rename_check_item = new QStandardItem;
+        rename_check_item->setCheckable(true);
+        rename_check_item->setEditable(false);
+        rename_check_item->setData(Qt::AlignCenter, Qt::TextAlignmentRole);
+        rename_check_item->setEnabled(allow_rename);
+        rename_check_item->setCheckState(allow_rename ? Qt::Checked : Qt::Unchecked);
+        rename_check_item->setToolTip(
+            tr("Uncheck to keep the original filename and still move the file."));
 
         std::string category_text = file.category;
         if (is_image_entry && is_missing_category_label(category_text)) {
@@ -779,6 +964,7 @@ void CategorizationDialog::populate_model()
         row << select_item
             << file_item
             << type_item
+            << rename_check_item
             << suggested_item
             << category_item
             << subcategory_item
@@ -792,6 +978,22 @@ void CategorizationDialog::populate_model()
     apply_subcategory_visibility();
     apply_rename_visibility();
     table_view->resizeColumnsToContents();
+    const auto cap_column = [this](int column, int maximum_width) {
+        table_view->setColumnWidth(column, std::min(table_view->columnWidth(column), maximum_width));
+    };
+    cap_column(ColumnFile, 230);
+    cap_column(ColumnRename, 110);
+    cap_column(ColumnSuggestedName, 270);
+    cap_column(ColumnCategory, 140);
+    cap_column(ColumnSubcategory, 140);
+    cap_column(ColumnStatus, 100);
+    if (table_view) {
+        table_view->resizeRowsToContents();
+        for (int row = 0; row < model->rowCount(); ++row) {
+            table_view->setRowHeight(row,
+                                     std::clamp(table_view->rowHeight(row), 30, 58));
+        }
+    }
     update_select_all_state();
     update_preview_button_state();
 }
@@ -804,21 +1006,26 @@ void CategorizationDialog::update_type_icon(QStandardItem* item)
 
     const QString code = item->data(Qt::UserRole).toString();
     QString full_path;
-    if (code == QStringLiteral("I") && model) {
+    QString file_name;
+    if (model && item->row() >= 0) {
         if (auto* file_item = model->item(item->row(), ColumnFile)) {
-            const QString file_name = file_item->text();
-            const QString base_dir = file_item->data(kFilePathRole).toString();
-            if (!base_dir.isEmpty()) {
-                full_path = QDir(base_dir).filePath(file_name);
-            } else if (!base_dir_.empty()) {
-                full_path = QDir(QString::fromStdString(base_dir_)).filePath(file_name);
-            } else {
-                full_path = file_name;
+            file_name = file_item->text();
+            if (code == QStringLiteral("I")) {
+                const QString base_dir = file_item->data(kFilePathRole).toString();
+                if (!base_dir.isEmpty()) {
+                    full_path = QDir(base_dir).filePath(file_name);
+                } else if (!base_dir_.empty()) {
+                    full_path = QDir(QString::fromStdString(base_dir_)).filePath(file_name);
+                } else {
+                    full_path = file_name;
+                }
             }
         }
     }
     item->setIcon(type_icon(code, full_path));
-    item->setText(QString());
+    if (!file_name.isEmpty() || code == QStringLiteral("D")) {
+        item->setText(file_type_label(code, file_name));
+    }
 }
 
 
@@ -920,7 +1127,7 @@ void CategorizationDialog::record_categorization_to_db(bool learn_approved_mappi
             rename_only = true;
         }
         const auto* suggested_item = model->item(row, ColumnSuggestedName);
-        const std::string suggested_name = suggested_item
+        const std::string suggested_name = row_rename_accepted(row) && suggested_item
                                                ? suggested_item->text().toStdString()
                                                : std::string();
 
@@ -1116,9 +1323,7 @@ void CategorizationDialog::on_confirm_and_sort_button_clicked()
             }
 
             const std::string file_name = file_item->text().toStdString();
-            const std::string rename_candidate = rename_item
-                                                     ? rename_item->text().toStdString()
-                                                     : std::string();
+            const std::string rename_candidate = effective_rename_candidate(row_index);
             std::string source_dir = file_item->data(kFilePathRole).toString().toStdString();
             if (source_dir.empty()) {
                 source_dir = base_dir;
@@ -1141,7 +1346,7 @@ void CategorizationDialog::on_confirm_and_sort_button_clicked()
                                                                    state.used_names,
                                                                    state.next_index);
             state.used_names.insert(to_lower_copy_str(unique_name));
-            if (unique_name != desired_name) {
+            if (unique_name != desired_name && row_rename_accepted(row_index)) {
                 if (rename_item) {
                     rename_item->setText(QString::fromStdString(unique_name));
                 }
@@ -1177,9 +1382,7 @@ void CategorizationDialog::on_confirm_and_sort_button_clicked()
         const std::string file_name = file_item->text().toStdString();
         const std::string category = read_item_or_hidden_text(category_item, kHiddenCategoryRole);
         const std::string subcategory = read_item_or_hidden_text(subcategory_item, kHiddenSubcategoryRole);
-        const std::string rename_candidate = rename_item
-                                                 ? rename_item->text().toStdString()
-                                                 : std::string();
+        const std::string rename_candidate = effective_rename_candidate(row_index);
         std::string source_dir = file_item->data(kFilePathRole).toString().toStdString();
         if (source_dir.empty()) {
             source_dir = base_dir;
@@ -1319,6 +1522,7 @@ void CategorizationDialog::handle_selected_row(int row_index,
 {
     const std::string destination_name = resolve_destination_name(file_name, rename_candidate);
     const bool rename_active = destination_name != file_name;
+    const bool rename_accepted = row_rename_accepted(row_index);
     auto* category_item_ref = model ? model->item(row_index, ColumnCategory) : nullptr;
     auto* subcategory_item_ref = model ? model->item(row_index, ColumnSubcategory) : nullptr;
     auto read_role_text = [](QStandardItem* item, int role) {
@@ -1339,6 +1543,10 @@ void CategorizationDialog::handle_selected_row(int row_index,
         }
         if (auto* rename_item = model->item(row_index, ColumnSuggestedName)) {
             rename_item->setText(QString::fromStdString(destination_name));
+        }
+        if (auto* rename_check_item = model->item(row_index, ColumnRename)) {
+            rename_check_item->setCheckState(Qt::Checked);
+            rename_check_item->setEnabled(false);
         }
         update_preview_column(row_index);
     };
@@ -1584,9 +1792,11 @@ void CategorizationDialog::handle_selected_row(int row_index,
                 bool rename_applied = rename_active;
                 if (rename_active) {
                     suggested_name = destination_name;
-                } else if (auto cached = db_manager->get_categorized_file(source_db_dir, file_name, file_type)) {
-                    suggested_name = cached->suggested_name;
-                    rename_applied = cached->rename_applied;
+                } else if (rename_accepted) {
+                    if (auto cached = db_manager->get_categorized_file(source_db_dir, file_name, file_type)) {
+                        suggested_name = cached->suggested_name;
+                        rename_applied = cached->rename_applied;
+                    }
                 }
                 db_manager->remove_file_categorization(source_db_dir, file_name, file_type);
                 db_manager->insert_or_update_file_with_categorization(
@@ -1868,6 +2078,42 @@ void CategorizationDialog::update_preview_button_state()
         return;
     }
     preview_button->setEnabled(model && model->rowCount() > 0);
+    update_path_detail();
+}
+
+void CategorizationDialog::update_path_detail()
+{
+    if (!path_detail_label) {
+        return;
+    }
+
+    const auto row = current_preview_row();
+    if (!row.has_value()) {
+        path_detail_label->clear();
+        path_detail_label->setToolTip(QString());
+        return;
+    }
+
+    const auto preview = build_preview_record_for_row(*row);
+    if (!preview.has_value()) {
+        path_detail_label->clear();
+        path_detail_label->setToolTip(QString());
+        return;
+    }
+
+    auto display = [](std::string value) {
+#ifdef _WIN32
+        std::replace(value.begin(), value.end(), '/', '\\');
+#endif
+        return QString::fromStdString(value);
+    };
+
+    const QString text = tr("File") + ": " + display(preview->source) + "\n" +
+                         tr("Suggested name") + ": " +
+                         QString::fromStdString(preview->destination_file_name) + "\n" +
+                         tr("Destination") + ": " + display(preview->destination);
+    path_detail_label->setText(text);
+    path_detail_label->setToolTip(text);
 }
 
 void CategorizationDialog::on_preview_button_clicked()
@@ -1900,6 +2146,50 @@ void CategorizationDialog::on_select_highlighted_clicked()
         return;
     }
     apply_check_state_to_rows(rows, Qt::Checked);
+}
+
+void CategorizationDialog::on_keep_original_names_clicked()
+{
+    if (!model) {
+        return;
+    }
+
+    auto rows = selected_row_indices();
+    if (rows.empty()) {
+        if (const auto row = current_preview_row()) {
+            rows.push_back(*row);
+        }
+    }
+    if (rows.empty()) {
+        return;
+    }
+
+    ScopedFlag guard(suppress_item_changed_);
+    int updated = 0;
+    for (const int row : rows) {
+        auto* file_item = model->item(row, ColumnFile);
+        auto* suggested_item = model->item(row, ColumnSuggestedName);
+        auto* rename_check_item = model->item(row, ColumnRename);
+        if (!file_item || !suggested_item || !rename_check_item) {
+            continue;
+        }
+        if (file_item->data(kRenameAppliedRole).toBool() || !rename_check_item->isEnabled()) {
+            continue;
+        }
+        if (rename_check_item->checkState() == Qt::Unchecked) {
+            continue;
+        }
+        rename_check_item->setCheckState(Qt::Unchecked);
+        rename_check_item->setToolTip(tr("Original filename kept."));
+        update_preview_column(row);
+        update_auto_approval_for_row(row);
+        ++updated;
+    }
+
+    update_path_detail();
+    if (ui_logger) {
+        ui_logger->info("Kept original filenames for {} review item(s).", updated);
+    }
 }
 
 void CategorizationDialog::record_move_for_undo(int row,
@@ -2165,6 +2455,7 @@ void CategorizationDialog::on_show_subcategories_toggled(bool checked)
     for (int row = 0; row < model->rowCount(); ++row) {
         update_preview_column(row);
     }
+    update_path_detail();
     if (auto_approve_filename_changes_ || auto_approve_categorization_) {
         apply_auto_approval_to_rows();
     }
@@ -2415,6 +2706,7 @@ void CategorizationDialog::apply_rename_only_row_visibility()
 void CategorizationDialog::apply_rename_visibility()
 {
     if (table_view) {
+        table_view->setColumnHidden(ColumnRename, !show_rename_column);
         table_view->setColumnHidden(ColumnSuggestedName, !show_rename_column);
     }
 }
@@ -2576,7 +2868,6 @@ CategorizationDialog::build_preview_record_for_row(int row, std::string* debug_r
     const auto* file_item = model->item(row, ColumnFile);
     const auto* category_item = model->item(row, ColumnCategory);
     const auto* subcategory_item = model->item(row, ColumnSubcategory);
-    const auto* rename_item = model->item(row, ColumnSuggestedName);
     if (!file_item || !category_item) {
         return fail("Missing file/category item");
     }
@@ -2586,7 +2877,7 @@ CategorizationDialog::build_preview_record_for_row(int row, std::string* debug_r
     if (source_dir.empty()) {
         source_dir = base_dir_;
     }
-    const std::string rename_candidate = rename_item ? rename_item->text().toStdString() : std::string();
+    const std::string rename_candidate = effective_rename_candidate(row);
     const std::string destination_name = resolve_destination_name(file_name, rename_candidate);
     const bool rename_active = destination_name != file_name;
     bool rename_only = false;
@@ -2671,6 +2962,52 @@ std::string CategorizationDialog::resolve_destination_name(const std::string& or
     return trimmed;
 }
 
+bool CategorizationDialog::row_rename_accepted(int row) const
+{
+    if (!model || row < 0 || row >= model->rowCount()) {
+        return false;
+    }
+    const auto* item = model->item(row, ColumnRename);
+    if (!item) {
+        return true;
+    }
+    return item->checkState() == Qt::Checked;
+}
+
+std::string CategorizationDialog::effective_rename_candidate(int row) const
+{
+    if (!row_rename_accepted(row)) {
+        return std::string();
+    }
+    const auto* item = model ? model->item(row, ColumnSuggestedName) : nullptr;
+    return item ? item->text().toStdString() : std::string();
+}
+
+void CategorizationDialog::sync_rename_checkbox_state(int row, bool check_when_available)
+{
+    if (!model || row < 0 || row >= model->rowCount()) {
+        return;
+    }
+    auto* check_item = model->item(row, ColumnRename);
+    auto* suggested_item = model->item(row, ColumnSuggestedName);
+    auto* file_item = model->item(row, ColumnFile);
+    if (!check_item || !suggested_item) {
+        return;
+    }
+
+    const bool locked = file_item && file_item->data(kRenameLockedRole).toBool();
+    const bool available = !locked && !suggested_item->text().trimmed().isEmpty();
+    const bool was_enabled = check_item->isEnabled();
+
+    ScopedFlag guard(suppress_item_changed_);
+    check_item->setEnabled(available);
+    if (!available) {
+        check_item->setCheckState(Qt::Unchecked);
+    } else if (check_when_available && !was_enabled) {
+        check_item->setCheckState(Qt::Checked);
+    }
+}
+
 bool CategorizationDialog::validate_filename(const std::string& name, std::string& error) const
 {
     return ReviewNameValidator::validate_filename(name, error);
@@ -2729,12 +3066,13 @@ void CategorizationDialog::update_preview_column(int row)
     }
     const auto preview = compute_preview_path(row);
     if (preview) {
-        std::string display = *preview;
+        const std::string full_display = *preview;
+        std::string display = display_destination_path(full_display, base_dir_);
 #ifdef _WIN32
         std::replace(display.begin(), display.end(), '/', '\\');
 #endif
         preview_item->setText(QString::fromStdString(display));
-        preview_item->setToolTip(QString::fromStdString(display));
+        preview_item->setToolTip(QString::fromStdString(full_display));
     } else {
         preview_item->setText(QStringLiteral("-"));
         preview_item->setToolTip(QString());
@@ -2802,6 +3140,7 @@ void CategorizationDialog::retranslate_ui()
     set_text_if(auto_approve_filenames_checkbox, tr("Auto-approve filename changes"));
     set_text_if(auto_approve_categories_checkbox, tr("Auto-approve categorization"));
     set_text_if(select_highlighted_button, tr("Select highlighted"));
+    set_text_if(keep_original_button, tr("Keep original name"));
     set_text_if(bulk_edit_button, tr("Edit selected..."));
     set_text_if(show_subcategories_checkbox, tr("Create subcategory folders"));
     set_text_if(dry_run_checkbox, tr("Dry run (preview only, do not move files)"));
@@ -2815,6 +3154,10 @@ void CategorizationDialog::retranslate_ui()
 
     if (select_highlighted_button) {
         select_highlighted_button->setToolTip(tr("Mark highlighted rows for processing (Ctrl+Space)."));
+    }
+    if (keep_original_button) {
+        keep_original_button->setToolTip(
+            tr("Use the current filename for highlighted rows instead of the suggested rename."));
     }
     if (auto_approve_filenames_checkbox) {
         auto_approve_filenames_checkbox->setToolTip(
@@ -2833,12 +3176,17 @@ void CategorizationDialog::retranslate_ui()
             tr("Process"),
             tr("File"),
             tr("Type"),
+            tr("Use suggested name"),
             tr("Suggested filename"),
             tr("Category"),
             tr("Subcategory"),
             tr("Status"),
             tr("Destination")
         });
+        model->setHeaderData(ColumnRename,
+                             Qt::Horizontal,
+                             tr("Uncheck to keep the original filename and still move the file."),
+                             Qt::ToolTipRole);
 
         for (int row = 0; row < model->rowCount(); ++row) {
             if (auto* type_item = model->item(row, ColumnType)) {
@@ -2850,6 +3198,7 @@ void CategorizationDialog::retranslate_ui()
             }
         }
     }
+    update_path_detail();
 }
 
 void CategorizationDialog::apply_status_text(QStandardItem* item) const
@@ -2879,7 +3228,7 @@ void CategorizationDialog::apply_status_text(QStandardItem* item) const
         break;
     case RowStatus::None:
     default:
-        item->setText(QString());
+        item->setText(tr("Pending"));
         break;
     }
 }
@@ -2920,9 +3269,17 @@ void CategorizationDialog::on_item_changed(QStandardItem* item)
 
     if (item->column() == ColumnSelect) {
         update_select_all_state();
+    } else if (item->column() == ColumnRename) {
+        update_preview_column(item->row());
+        update_path_detail();
+        update_auto_approval_for_row(item->row());
+        dry_run_plan_.clear();
     } else if (item->column() == ColumnCategory ||
                item->column() == ColumnSubcategory ||
                item->column() == ColumnSuggestedName) {
+        if (item->column() == ColumnSuggestedName) {
+            sync_rename_checkbox_state(item->row(), true);
+        }
         if ((item->column() == ColumnCategory || item->column() == ColumnSubcategory) &&
             (row_is_supported_image(item->row()) || row_is_supported_document(item->row()))) {
             const std::string text = item->text().toStdString();
@@ -2932,6 +3289,7 @@ void CategorizationDialog::on_item_changed(QStandardItem* item)
             }
         }
         update_preview_column(item->row());
+        update_path_detail();
         update_auto_approval_for_row(item->row());
         if (item->column() == ColumnCategory || item->column() == ColumnSubcategory) {
             update_subcategory_checkbox_state();
@@ -2939,6 +3297,7 @@ void CategorizationDialog::on_item_changed(QStandardItem* item)
     }
     // invalidate preview plan only on user-facing edits (selection/category fields)
     if (item->column() == ColumnSelect ||
+        item->column() == ColumnRename ||
         item->column() == ColumnCategory ||
         item->column() == ColumnSubcategory ||
         item->column() == ColumnSuggestedName) {

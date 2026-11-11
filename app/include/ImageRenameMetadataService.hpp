@@ -2,6 +2,7 @@
 #define IMAGE_RENAME_METADATA_SERVICE_HPP
 
 #include <chrono>
+#include <cstddef>
 #include <filesystem>
 #include <optional>
 #include <string>
@@ -50,6 +51,28 @@ public:
                                       const std::string& suggested_name);
 
     /**
+     * @brief Composes a final image filename from a template and image metadata.
+     *
+     * The subject is kept as the semantic component. Date, time and place are
+     * included only when @p include_date_place is true, so the existing
+     * "add photo date and place" option keeps its meaning.
+     *
+     * @param image_path Image whose EXIF metadata should be read.
+     * @param subject_name Suggested filename or subject from the visual analysis.
+     * @param template_text Template such as `{date} {place} {subject}`.
+     * @param include_date_place Whether date/time/place tokens may be populated.
+     * @param ascii_fold Whether to transliterate accented characters to ASCII.
+     * @param max_length Maximum filename stem length.
+     * @return Final filename including the original extension.
+     */
+    std::string compose_suggested_name(const std::filesystem::path& image_path,
+                                       const std::string& subject_name,
+                                       const std::string& template_text,
+                                       bool include_date_place,
+                                       bool ascii_fold,
+                                       std::size_t max_length);
+
+    /**
      * @brief Extracts the normalized capture date (`YYYY-MM-DD`) from image metadata.
      *
      * Returns `std::nullopt` when no supported metadata date is available.
@@ -58,6 +81,14 @@ public:
      * @return Normalized capture date, or `std::nullopt` if unavailable.
      */
     std::optional<std::string> extract_capture_date(
+        const std::filesystem::path& image_path) const;
+
+    /**
+     * @brief Extracts the normalized capture time (`HHMMSS`) from image metadata.
+     * @param image_path Absolute or relative image file path.
+     * @return Compact capture time, or `std::nullopt` if unavailable.
+     */
+    std::optional<std::string> extract_capture_time(
         const std::filesystem::path& image_path) const;
 
     /**
@@ -75,6 +106,7 @@ public:
 private:
     struct ExifMetadata {
         std::optional<std::string> capture_date;
+        std::optional<std::string> capture_time;
         std::optional<double> latitude;
         std::optional<double> longitude;
     };

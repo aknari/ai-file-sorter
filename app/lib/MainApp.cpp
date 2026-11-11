@@ -9,6 +9,7 @@
 #include "CacheMaintenanceService.hpp"
 #include "DialogUtils.hpp"
 #include "ErrorMessages.hpp"
+#include "ExclusionFilterDialog.hpp"
 #include "ExplorerExtensionEntitlement.hpp"
 #include "LLMClient.hpp"
 #include "LlmCatalog.hpp"
@@ -80,6 +81,7 @@
 #include <QStandardItemModel>
 #include <QCoreApplication>
 #include <QStatusBar>
+#include <QStringList>
 #include <QToolButton>
 #include <QTreeView>
 #include <QVBoxLayout>
@@ -314,6 +316,10 @@ void maybe_show_support_prompt(Settings& settings,
                                bool& prompt_active,
                                std::function<MainApp::SupportPromptResult(int)> show_prompt) {
     if (prompt_active) {
+        return;
+    }
+
+    if (settings.get_support_prompt_disabled()) {
         return;
     }
 
@@ -974,6 +980,10 @@ void MainApp::connect_signals()
             on_directory_selected(directory);
         }
     });
+    connect(exclusion_filter_button,
+            &QPushButton::clicked,
+            this,
+            &MainApp::show_analysis_exclusion_dialog);
 
     connect(path_entry, &QLineEdit::returnPressed, this, [this]() {
         const QString folder = path_entry->text();
@@ -1075,6 +1085,9 @@ void MainApp::load_settings()
     apply_development_logging();
     TranslationManager::instance().set_language(settings.get_language());
     sync_settings_to_ui();
+    analysis_exclusion_rules_.extensions = settings.get_analysis_exclusion_extensions();
+    analysis_exclusion_rules_.subfolders = settings.get_analysis_exclusion_subfolders();
+    analysis_exclusion_rules_.name_parts = settings.get_analysis_exclusion_name_parts();
     retranslate_ui();
 }
 
@@ -1147,6 +1160,7 @@ void MainApp::retranslate_ui()
     refresh_backend_status_label();
     populate_network_locations();
     apply_accessibility_metadata();
+    refresh_analysis_exclusion_button();
 }
 
 void MainApp::apply_accessibility_metadata()
@@ -1175,6 +1189,9 @@ void MainApp::apply_accessibility_metadata()
     }
 
     apply_named_control(browse_button, browse_button ? browse_button->text() : QString());
+    apply_named_control(exclusion_filter_button,
+                        exclusion_filter_button ? exclusion_filter_button->text() : QString(),
+                        exclusion_filter_button ? exclusion_filter_button->toolTip() : QString());
     apply_named_control(use_subcategories_checkbox,
                         use_subcategories_checkbox ? use_subcategories_checkbox->text() : QString(),
                         use_subcategories_checkbox ? use_subcategories_checkbox->toolTip() : QString());
@@ -1245,7 +1262,7 @@ void MainApp::apply_accessibility_metadata()
                             ? rename_images_only_checkbox->toolTip()
                             : QString());
     apply_named_control(image_options_toggle_button,
-                        image_options_toggle_button ? image_options_toggle_button->toolTip() : QString(),
+                        image_options_toggle_button ? image_options_toggle_button->text() : QString(),
                         image_options_toggle_button ? image_options_toggle_button->toolTip() : QString());
     apply_named_control(analyze_documents_checkbox,
                         analyze_documents_checkbox ? analyze_documents_checkbox->text() : QString(),
@@ -1280,7 +1297,7 @@ void MainApp::apply_accessibility_metadata()
                             : QString());
     apply_named_control(document_options_toggle_button,
                         document_options_toggle_button
-                            ? document_options_toggle_button->toolTip()
+                            ? document_options_toggle_button->text()
                             : QString(),
                         document_options_toggle_button
                             ? document_options_toggle_button->toolTip()
@@ -1593,6 +1610,63 @@ void MainApp::on_analyze_clicked()
 }
 
 
+void MainApp::show_analysis_exclusion_dialog()
+{
+    if (analysis_in_progress_ || analyze_thread.joinable()) {
+        return;
+    }
+
+    ExclusionFilterDialog dialog(analysis_exclusion_rules_.extensions,
+                                 analysis_exclusion_rules_.subfolders,
+                                 analysis_exclusion_rules_.name_parts,
+                                 this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    analysis_exclusion_rules_.extensions = dialog.extensions();
+    analysis_exclusion_rules_.subfolders = dialog.subfolders();
+    analysis_exclusion_rules_.name_parts = dialog.name_parts();
+    settings.set_analysis_exclusion_extensions(analysis_exclusion_rules_.extensions);
+    settings.set_analysis_exclusion_subfolders(analysis_exclusion_rules_.subfolders);
+    settings.set_analysis_exclusion_name_parts(analysis_exclusion_rules_.name_parts);
+    save_settings();
+    refresh_analysis_exclusion_button();
+    statusBar()->showMessage(tr("Exclusion rules updated."), 3000);
+}
+
+void MainApp::refresh_analysis_exclusion_button()
+{
+    if (!exclusion_filter_button) {
+        return;
+    }
+
+    const std::size_t count = analysis_exclusion_rules_.rule_count();
+    if (count == 0) {
+        exclusion_filter_button->setText(tr("Exclude…"));
+        exclusion_filter_button->setToolTip(
+            tr("Skip files by extension, subfolder, or filename before analysis."));
+    } else {
+        exclusion_filter_button->setText(
+            tr("Exclude (%1)…").arg(static_cast<qulonglong>(count)));
+        QStringList values;
+        const auto append_values = [&values](const std::vector<std::string>& entries) {
+            for (const auto& entry : entries) {
+                values << QString::fromStdString(entry);
+            }
+        };
+        append_values(analysis_exclusion_rules_.extensions);
+        append_values(analysis_exclusion_rules_.subfolders);
+        append_values(analysis_exclusion_rules_.name_parts);
+        exclusion_filter_button->setToolTip(
+            tr("Active exclusions: %1").arg(values.join(QStringLiteral(", "))));
+    }
+
+    exclusion_filter_button->setEnabled(!analysis_in_progress_ &&
+                                        !external_analysis_lock_active_);
+    exclusion_filter_button->setAccessibleName(tr("Exclude files from analysis"));
+}
+
 void MainApp::on_directory_selected(const QString& path, bool user_initiated)
 {
 #if defined(Q_OS_WIN)
@@ -1843,6 +1917,9 @@ void MainApp::update_analyze_button_state(bool analyzing)
             status_is_ready_ = false;
         }
     }
+    if (exclusion_filter_button) {
+        exclusion_filter_button->setEnabled(!analyzing && !external_analysis_lock_active_);
+    }
     apply_accessibility_metadata();
     if (analyze_button) {
         QAccessibleEvent button_name_changed(analyze_button, QAccessible::NameChanged);
@@ -1877,6 +1954,10 @@ void MainApp::refresh_analysis_runtime_lock_state()
             update_analyze_button_state(analysis_in_progress_);
         }
         analyze_button->setEnabled(true);
+        if (exclusion_filter_button) {
+            exclusion_filter_button->setEnabled(!analysis_in_progress_ &&
+                                                !external_analysis_lock_active_);
+        }
         return;
     }
 
@@ -1885,6 +1966,9 @@ void MainApp::refresh_analysis_runtime_lock_state()
     if (locked == external_analysis_lock_active_) {
         if (locked) {
             analyze_button->setEnabled(false);
+            if (exclusion_filter_button) {
+                exclusion_filter_button->setEnabled(false);
+            }
             statusBar()->showMessage(tr("Analyzing…"));
             status_is_ready_ = false;
         }
@@ -2821,6 +2905,8 @@ void MainApp::log_pending_queue()
 
 AnalysisWorkflowContext MainApp::make_analysis_workflow_context()
 {
+    const AnalysisExclusionRules exclusion_rules = analysis_exclusion_rules_;
+    const std::string exclusion_root = get_folder_path();
     return AnalysisWorkflowContext{
         settings,
         db_manager,
@@ -2843,6 +2929,9 @@ AnalysisWorkflowContext MainApp::make_analysis_workflow_context()
         [this]() { log_pending_queue(); },
         [this]() { return effective_scan_options(); },
         [](std::vector<FileEntry>&) {},
+        [exclusion_rules, exclusion_root](const std::string& full_path) {
+            return exclusion_rules.matches(exclusion_root, full_path);
+        },
         []() {},
         [this](const std::vector<AnalysisWorkflowContext::StagePlan>& stages) {
             configure_progress_stages(stages);

@@ -101,6 +101,95 @@ QString load_text_resource(const QString& path)
     return QString::fromUtf8(file.readAll());
 }
 
+QString filename_template_help_html(bool document_mode, const QString& current_template)
+{
+    const QString escaped_template = current_template.toHtmlEscaped();
+    const bool spanish =
+        TranslationManager::instance().current_language() == Language::Spanish;
+
+    if (document_mode) {
+        if (spanish) {
+            return QStringLiteral(R"(
+<h3>Plantilla de nombres para documentos</h3>
+<p>El nombre sugerido se compone a partir de esta plantilla. Los tokens vacíos desaparecen junto con sus separadores y la extensión original se conserva.</p>
+<table border="1" cellspacing="0" cellpadding="4">
+<tr><th>Token</th><th>Significado</th></tr>
+<tr><td><code>{date}</code></td><td>Fecha de creación del documento (PDF/DOCX; en algunos documentos solo se obtiene el año y el mes).</td></tr>
+<tr><td><code>{year}</code></td><td>Los cuatro primeros dígitos de la fecha.</td></tr>
+<tr><td><code>{type}</code></td><td>Tipo detectado por el modelo: factura, recibo, contrato, informe, carta, manual, notas, etc. Se limita a dos palabras.</td></tr>
+<tr><td><code>{title}</code></td><td>Título tomado de los metadatos del documento (PDF/DOCX/ODF). Si no existe, se usa el asunto.</td></tr>
+<tr><td><code>{subject}</code></td><td>Asunto descriptivo del contenido, limitado a tres palabras.</td></tr>
+<tr><td><code>{original}</code></td><td>Nombre original del archivo, sin extensión.</td></tr>
+</table>
+<p><b>Plantilla actual:</b> <code>%1</code></p>
+<p><b>Ejemplo:</b> <code>2024-05 factura Acme Enero.pdf</code></p>
+<p>La plantilla se aplica cuando el análisis de documentos por contenido está activo y la opción de renombrar documentos está marcada. Si el nombre ya existe, se añaden sufijos <code>_1</code>, <code>_2</code>, etc.; nunca se sobrescribe un archivo.</p>
+<p>Los ajustes se guardan en la sección <code>[Settings]</code> de <code>config.ini</code>: <code>DocumentFilenameTemplate</code>, <code>FilenameTemplateAsciiFold</code> y <code>FilenameTemplateMaxLength</code>.</p>
+<p>Los archivos de audio y vídeo no usan esta plantilla: mantienen el formato <code>año_artista_álbum_título</code>.</p>
+)").arg(escaped_template);
+        }
+        return QStringLiteral(R"(
+<h3>Document filename template</h3>
+<p>The suggested name is assembled from this template. Empty tokens disappear together with their separators, and the original extension is preserved.</p>
+<table border="1" cellspacing="0" cellpadding="4">
+<tr><th>Token</th><th>Meaning</th></tr>
+<tr><td><code>{date}</code></td><td>Document creation date (PDF/DOCX; some documents only expose year and month).</td></tr>
+<tr><td><code>{year}</code></td><td>The first four digits of the date.</td></tr>
+<tr><td><code>{type}</code></td><td>Type detected by the model: invoice, receipt, contract, report, letter, manual, notes, etc. Limited to two words.</td></tr>
+<tr><td><code>{title}</code></td><td>Title read from document metadata (PDF/DOCX/ODF). Falls back to the subject when absent.</td></tr>
+<tr><td><code>{subject}</code></td><td>Short descriptive subject, limited to three words.</td></tr>
+<tr><td><code>{original}</code></td><td>Original filename without its extension.</td></tr>
+</table>
+<p><b>Current template:</b> <code>%1</code></p>
+<p><b>Example:</b> <code>2024-05 invoice Acme January.pdf</code></p>
+<p>The template applies when document content analysis and the document rename option are enabled. If the name already exists, suffixes <code>_1</code>, <code>_2</code>, etc. are added; files are never overwritten.</p>
+<p>Settings are stored in the <code>[Settings]</code> section of <code>config.ini</code>: <code>DocumentFilenameTemplate</code>, <code>FilenameTemplateAsciiFold</code> and <code>FilenameTemplateMaxLength</code>.</p>
+<p>Audio and video files do not use this template: they keep the <code>year_artist_album_title</code> format.</p>
+)").arg(escaped_template);
+    }
+
+    if (spanish) {
+        return QStringLiteral(R"(
+<h3>Plantilla de nombres para imágenes</h3>
+<p>El nombre sugerido se compone a partir de esta plantilla. Los tokens vacíos desaparecen junto con sus separadores y la extensión original se conserva.</p>
+<table border="1" cellspacing="0" cellpadding="4">
+<tr><th>Token</th><th>Significado</th></tr>
+<tr><td><code>{date}</code></td><td>Fecha de captura de los metadatos EXIF.</td></tr>
+<tr><td><code>{time}</code></td><td>Hora de captura en formato compacto <code>HHMMSS</code>.</td></tr>
+<tr><td><code>{year}</code></td><td>Los cuatro primeros dígitos de la fecha.</td></tr>
+<tr><td><code>{place}</code></td><td>Lugar obtenido a partir de las coordenadas GPS. La primera vez requiere conexión a Internet; después se usa la caché local.</td></tr>
+<tr><td><code>{subject}</code></td><td>Descripción visual generada por el modelo, limitada a tres palabras.</td></tr>
+<tr><td><code>{original}</code></td><td>Nombre original del archivo, sin extensión.</td></tr>
+</table>
+<p><b>Plantilla actual:</b> <code>%1</code></p>
+<p><b>Ejemplo:</b> <code>2014-03-10 Venecia patos negros.jpg</code></p>
+<p>La plantilla se aplica cuando el análisis de imágenes por contenido está activo y la opción de renombrar imágenes está marcada. <code>{date}</code>, <code>{time}</code> y <code>{place}</code> solo se rellenan si está activa la opción «Añadir fecha y lugar de la foto al nombre».</p>
+<p>Si el nombre ya existe, se añaden sufijos <code>_1</code>, <code>_2</code>, etc.; nunca se sobrescribe un archivo.</p>
+<p>Los ajustes se guardan en la sección <code>[Settings]</code> de <code>config.ini</code>: <code>ImageFilenameTemplate</code>, <code>FilenameTemplateAsciiFold</code> y <code>FilenameTemplateMaxLength</code>.</p>
+<p>Los archivos de audio y vídeo no usan esta plantilla: mantienen el formato <code>año_artista_álbum_título</code>.</p>
+)").arg(escaped_template);
+    }
+    return QStringLiteral(R"(
+<h3>Picture filename template</h3>
+<p>The suggested name is assembled from this template. Empty tokens disappear together with their separators, and the original extension is preserved.</p>
+<table border="1" cellspacing="0" cellpadding="4">
+<tr><th>Token</th><th>Meaning</th></tr>
+<tr><td><code>{date}</code></td><td>Capture date from EXIF metadata.</td></tr>
+<tr><td><code>{time}</code></td><td>Capture time in compact <code>HHMMSS</code> form.</td></tr>
+<tr><td><code>{year}</code></td><td>The first four digits of the date.</td></tr>
+<tr><td><code>{place}</code></td><td>Place resolved from GPS coordinates. The first lookup needs network access; later lookups use the local cache.</td></tr>
+<tr><td><code>{subject}</code></td><td>Visual description generated by the model, limited to three words.</td></tr>
+<tr><td><code>{original}</code></td><td>Original filename without its extension.</td></tr>
+</table>
+<p><b>Current template:</b> <code>%1</code></p>
+<p><b>Example:</b> <code>2014-03-10 Venice black ducks.jpg</code></p>
+<p>The template applies when picture content analysis and the picture rename option are enabled. <code>{date}</code>, <code>{time}</code> and <code>{place}</code> are filled only when "Add photo date and place to filename" is enabled.</p>
+<p>If the name already exists, suffixes <code>_1</code>, <code>_2</code>, etc. are added; files are never overwritten.</p>
+<p>Settings are stored in the <code>[Settings]</code> section of <code>config.ini</code>: <code>ImageFilenameTemplate</code>, <code>FilenameTemplateAsciiFold</code> and <code>FilenameTemplateMaxLength</code>.</p>
+<p>Audio and video files do not use this template: they keep the <code>year_artist_album_title</code> format.</p>
+)").arg(escaped_template);
+}
+
 QString quick_start_markdown_for_language_impl(Language language)
 {
     QString markdown;
@@ -216,6 +305,28 @@ void MainAppHelpActions::show_about(QWidget* parent)
 
     credits_layout->addStretch(1);
     tabs->addTab(credits_tab, QObject::tr("Credits"));
+
+    auto* button_box = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
+    QObject::connect(button_box, &QDialogButtonBox::rejected, &dialog, &QDialog::accept);
+    layout->addWidget(button_box);
+
+    dialog.exec();
+}
+
+void MainAppHelpActions::show_filename_template_help(QWidget* parent,
+                                                     bool document_mode,
+                                                     const QString& current_template)
+{
+    QDialog dialog(parent);
+    dialog.setWindowTitle(QObject::tr("Filename template help"));
+    dialog.resize(760, 620);
+
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* browser = new QTextBrowser(&dialog);
+    browser->setOpenExternalLinks(false);
+    browser->setReadOnly(true);
+    browser->setHtml(filename_template_help_html(document_mode, current_template));
+    layout->addWidget(browser);
 
     auto* button_box = new QDialogButtonBox(QDialogButtonBox::Close, &dialog);
     QObject::connect(button_box, &QDialogButtonBox::rejected, &dialog, &QDialog::accept);

@@ -289,6 +289,46 @@ public:
      */
     void set_add_image_date_place_to_filename(bool value);
     /**
+     * @brief Returns the template used for document rename suggestions.
+     * @return Template text such as `{date} {type} {title}`.
+     */
+    std::string get_document_filename_template() const;
+    /**
+     * @brief Sets the template used for document rename suggestions.
+     * @param value Template text; invalid values revert to the default on load.
+     */
+    void set_document_filename_template(const std::string& value);
+    /**
+     * @brief Returns the template used for image rename suggestions.
+     * @return Template text such as `{date} {place} {subject}`.
+     */
+    std::string get_image_filename_template() const;
+    /**
+     * @brief Sets the template used for image rename suggestions.
+     * @param value Template text; invalid values revert to the default on load.
+     */
+    void set_image_filename_template(const std::string& value);
+    /**
+     * @brief Returns whether template components are transliterated to ASCII.
+     * @return True when accents are folded to ASCII characters.
+     */
+    bool get_filename_template_ascii_fold() const;
+    /**
+     * @brief Sets whether template components are transliterated to ASCII.
+     * @param value True to fold accents to ASCII characters.
+     */
+    void set_filename_template_ascii_fold(bool value);
+    /**
+     * @brief Returns the maximum rendered filename stem length.
+     * @return Maximum stem length in characters.
+     */
+    int get_filename_template_max_length() const;
+    /**
+     * @brief Sets the maximum rendered filename stem length.
+     * @param value Maximum stem length in characters, clamped to a safe range.
+     */
+    void set_filename_template_max_length(int value);
+    /**
      * @brief Returns whether audio/video filename suggestions should include media metadata.
      * @return True when audio/video metadata-based filename suggestions are enabled.
      */
@@ -485,6 +525,37 @@ public:
     void set_review_auto_approve_categorization(bool value);
 
     /**
+     * @brief Returns the extensions excluded before analysis.
+     * @return Extension values without a leading dot.
+     */
+    std::vector<std::string> get_analysis_exclusion_extensions() const;
+    /**
+     * @brief Replaces the extensions excluded before analysis.
+     * @param values Extension values to store.
+     */
+    void set_analysis_exclusion_extensions(std::vector<std::string> values);
+    /**
+     * @brief Returns the subfolders excluded before analysis.
+     * @return Subfolder patterns relative to the selected folder.
+     */
+    std::vector<std::string> get_analysis_exclusion_subfolders() const;
+    /**
+     * @brief Replaces the subfolders excluded before analysis.
+     * @param values Subfolder patterns to store.
+     */
+    void set_analysis_exclusion_subfolders(std::vector<std::string> values);
+    /**
+     * @brief Returns the filename fragments excluded before analysis.
+     * @return Case-insensitive filename fragments.
+     */
+    std::vector<std::string> get_analysis_exclusion_name_parts() const;
+    /**
+     * @brief Replaces the filename fragments excluded before analysis.
+     * @param values Filename fragments to store.
+     */
+    void set_analysis_exclusion_name_parts(std::vector<std::string> values);
+
+    /**
      * @brief Resolves the full path to the active `config.ini` file.
      * @return Platform-appropriate config file path.
      */
@@ -606,6 +677,16 @@ public:
      */
     void set_next_support_prompt_threshold(int threshold);
     /**
+     * @brief Returns whether the support/donation prompt is disabled.
+     * @return True when the prompt should not be shown.
+     */
+    bool get_support_prompt_disabled() const;
+    /**
+     * @brief Sets whether the support/donation prompt is disabled.
+     * @param value True to suppress the prompt.
+     */
+    void set_support_prompt_disabled(bool value);
+    /**
      * @brief Returns whether the Windows Explorer extension install prompt is suppressed.
      * @return True when the prompt should no longer be shown.
      */
@@ -697,6 +778,10 @@ private:
     bool analyze_images_by_content{false};
     bool offer_rename_images{false};
     bool add_image_date_place_to_filename{false};
+    std::string document_filename_template{"{date} {type} {title}"};
+    std::string image_filename_template{"{date} {place} {subject}"};
+    bool filename_template_ascii_fold{true};
+    int filename_template_max_length{100};
     bool add_audio_video_metadata_to_filename{true};
     bool add_image_date_to_category{false};
     bool image_options_expanded{false};
@@ -727,8 +812,12 @@ private:
     bool headless_review_before_apply{true};
     bool review_auto_approve_filename_changes{false};
     bool review_auto_approve_categorization{false};
+    std::vector<std::string> analysis_exclusion_extensions;
+    std::vector<std::string> analysis_exclusion_subfolders;
+    std::vector<std::string> analysis_exclusion_name_parts;
     int categorized_file_count{0};
     int next_support_prompt_threshold{50};
+    bool support_prompt_disabled{false};
     bool windows_explorer_extension_prompt_dismissed{false};
     std::string windows_explorer_extension_prompt_last_shown_utc;
     std::vector<std::string> allowed_categories;

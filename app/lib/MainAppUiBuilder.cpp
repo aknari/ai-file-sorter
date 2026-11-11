@@ -65,26 +65,78 @@ public:
         : QToolButton(parent)
     {
         setCheckable(true);
-        setToolButtonStyle(Qt::ToolButtonIconOnly);
+        setToolButtonStyle(Qt::ToolButtonTextOnly);
         setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Fixed);
         setArrowType(Qt::NoArrow);
         setAutoRaise(true);
-        setFixedSize(QSize(14, 14));
+        setCursor(Qt::PointingHandCursor);
+        setFocusPolicy(Qt::TabFocus);
+    }
+
+    QSize sizeHint() const override
+    {
+        const QFontMetrics metrics(font());
+        const int text_width = text().isEmpty() ? 0 : metrics.horizontalAdvance(text());
+        const int width = kChevronSize + kGap + text_width + 2 * kPadding;
+        return QSize(width, std::max(kChevronSize + 2 * kPadding, metrics.height() + 2));
+    }
+
+    QSize minimumSizeHint() const override
+    {
+        return sizeHint();
     }
 
 protected:
     void paintEvent(QPaintEvent*) override
     {
         QPainter painter(this);
-        QStyleOption option;
-        option.initFrom(this);
-        option.rect = rect();
-        option.state |= QStyle::State_Children;
-        if (isChecked()) {
-            option.state |= QStyle::State_Open;
+        painter.setRenderHint(QPainter::Antialiasing, true);
+
+        QColor color = palette().color(isEnabled() ? QPalette::Active : QPalette::Disabled,
+                                       QPalette::ButtonText);
+        if (!isEnabled()) {
+            color.setAlpha(130);
         }
-        style()->drawPrimitive(QStyle::PE_IndicatorBranch, &option, &painter, this);
+
+        // Draw the disclosure chevron explicitly: the native branch indicator is
+        // not rendered by every platform style, which left this control invisible.
+        const qreal center_y = height() / 2.0;
+        const qreal left = kPadding;
+        QPainterPath chevron;
+        if (isChecked()) {
+            chevron.moveTo(left, center_y - 2.5);
+            chevron.lineTo(left + kChevronSize / 2.0, center_y + 2.5);
+            chevron.lineTo(left + kChevronSize, center_y - 2.5);
+        } else {
+            chevron.moveTo(left + 1.0, center_y - 4.5);
+            chevron.lineTo(left + 1.0 + kChevronSize / 2.0, center_y);
+            chevron.lineTo(left + 1.0, center_y + 4.5);
+        }
+        painter.setPen(QPen(color, 1.6, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+        painter.setBrush(Qt::NoBrush);
+        painter.drawPath(chevron);
+
+        if (!text().isEmpty()) {
+            painter.setPen(color);
+            const QRect text_rect(kPadding + kChevronSize + kGap,
+                                  0,
+                                  width() - (kPadding + kChevronSize + kGap) - kPadding,
+                                  height());
+            painter.drawText(text_rect, Qt::AlignVCenter | Qt::AlignLeft, text());
+        }
+
+        if (hasFocus()) {
+            QStyleOptionFocusRect focus_option;
+            focus_option.initFrom(this);
+            focus_option.rect = rect().adjusted(0, 0, -1, -1);
+            style()->drawPrimitive(QStyle::PE_FrameFocusRect, &focus_option, &painter, this);
+        }
     }
+
+private:
+    static constexpr int kChevronSize = 10;
+    static constexpr int kGap = 4;
+    static constexpr int kPadding = 2;
 };
 
 using MenuIconPainter = std::function<void(QPainter&, const QRectF&, bool)>;
@@ -355,9 +407,13 @@ void MainAppUiBuilder::build_central_panel(MainApp& app) {
     app.path_label = new QLabel(central);
     app.path_entry = new QLineEdit(central);
     app.browse_button = new QPushButton(central);
+    app.exclusion_filter_button = new QPushButton(central);
+    app.exclusion_filter_button->setObjectName(QStringLiteral("aifsExclusionFilterButton"));
+    app.exclusion_filter_button->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
     path_layout->addWidget(app.path_label);
     path_layout->addWidget(app.path_entry, 1);
     path_layout->addWidget(app.browse_button);
+    path_layout->addWidget(app.exclusion_filter_button);
     main_layout->addLayout(path_layout);
 
     auto* options_layout = new QHBoxLayout();
@@ -395,8 +451,23 @@ void MainAppUiBuilder::build_central_panel(MainApp& app) {
     app.offer_rename_documents_checkbox = new QCheckBox(central);
     app.rename_documents_only_checkbox = new QCheckBox(central);
     app.add_document_date_to_category_checkbox = new QCheckBox(central);
+    app.document_rename_help_button = new QToolButton(central);
+    app.document_rename_help_button->setText(QStringLiteral("?"));
+    app.document_rename_help_button->setAutoRaise(true);
+    QObject::connect(app.document_rename_help_button, &QToolButton::clicked, &app, [&app]() {
+        MainAppHelpActions::show_filename_template_help(
+            &app,
+            true,
+            QString::fromStdString(app.settings.get_document_filename_template()));
+    });
+    auto* document_rename_row = new QHBoxLayout();
+    document_rename_row->setContentsMargins(0, 0, 0, 0);
+    document_rename_row->setSpacing(6);
+    document_rename_row->addWidget(app.offer_rename_documents_checkbox);
+    document_rename_row->addWidget(app.document_rename_help_button);
+    document_rename_row->addStretch(1);
     document_rename_layout->addWidget(app.process_documents_only_checkbox);
-    document_rename_layout->addWidget(app.offer_rename_documents_checkbox);
+    document_rename_layout->addLayout(document_rename_row);
     document_rename_layout->addWidget(app.rename_documents_only_checkbox);
     document_rename_layout->addWidget(app.add_document_date_to_category_checkbox);
     app.document_options_container->setVisible(false);
@@ -426,10 +497,25 @@ void MainAppUiBuilder::build_central_panel(MainApp& app) {
     app.add_image_date_place_to_filename_checkbox = new QCheckBox(central);
     app.offer_rename_images_checkbox = new QCheckBox(central);
     app.rename_images_only_checkbox = new QCheckBox(central);
+    app.image_rename_help_button = new QToolButton(central);
+    app.image_rename_help_button->setText(QStringLiteral("?"));
+    app.image_rename_help_button->setAutoRaise(true);
+    QObject::connect(app.image_rename_help_button, &QToolButton::clicked, &app, [&app]() {
+        MainAppHelpActions::show_filename_template_help(
+            &app,
+            false,
+            QString::fromStdString(app.settings.get_image_filename_template()));
+    });
+    auto* image_rename_row = new QHBoxLayout();
+    image_rename_row->setContentsMargins(0, 0, 0, 0);
+    image_rename_row->setSpacing(6);
+    image_rename_row->addWidget(app.offer_rename_images_checkbox);
+    image_rename_row->addWidget(app.image_rename_help_button);
+    image_rename_row->addStretch(1);
     image_rename_layout->addWidget(app.process_images_only_checkbox);
     image_rename_layout->addWidget(app.add_image_date_to_category_checkbox);
     image_rename_layout->addWidget(app.add_image_date_place_to_filename_checkbox);
-    image_rename_layout->addWidget(app.offer_rename_images_checkbox);
+    image_rename_layout->addLayout(image_rename_row);
     image_rename_layout->addWidget(app.rename_images_only_checkbox);
     app.image_options_container->setVisible(false);
     image_options_layout->addWidget(app.image_options_container);
@@ -565,7 +651,9 @@ UiTranslator::Dependencies MainAppUiBuilder::build_translator_dependencies(MainA
             app.offer_rename_documents_checkbox,
             app.rename_documents_only_checkbox,
             app.add_document_date_to_category_checkbox,
-            app.document_options_toggle_button},
+            app.document_options_toggle_button,
+            app.document_rename_help_button,
+            app.image_rename_help_button},
         .tree_model = app.tree_model,
         .menus = UiTranslator::MenuControls{
             app.file_menu,

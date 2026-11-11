@@ -54,6 +54,8 @@ struct AnalysisWorkflowContext {
     std::function<FileScanOptions()> effective_scan_options;
     /** @brief Optional host filter for scan entries before analysis and review. */
     std::function<void(std::vector<FileEntry>&)> filter_file_entries;
+    /** @brief Optional host predicate for paths excluded before analysis. */
+    std::function<bool(const std::string&)> is_excluded_path;
     /** @brief Optional callback when the in-progress review preview has changed. */
     std::function<void()> notify_review_preview_changed;
     std::function<void(const std::vector<StagePlan>&)> configure_progress_stages;

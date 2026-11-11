@@ -166,6 +166,11 @@ private:
 
 class PromptCapturingLLM : public ILLMClient {
 public:
+    explicit PromptCapturingLLM(
+        std::string response = utf8_string(u8R"({"summary":"Quarterly summary","filename":"시장 분석"})"))
+        : response_(std::move(response)) {
+    }
+
     std::string categorize_file(const std::string&,
                                 const std::string&,
                                 FileType,
@@ -175,13 +180,16 @@ public:
 
     std::string complete_prompt(const std::string& prompt, int) override {
         last_prompt = prompt;
-        return utf8_string(u8R"({"summary":"Quarterly summary","filename":"시장 분석"})");
+        return response_;
     }
 
     void set_prompt_logging_enabled(bool) override {
     }
 
     std::string last_prompt;
+
+private:
+    std::string response_;
 };
 } // namespace
 
@@ -374,6 +382,31 @@ TEST_CASE("Recursive recategorization clears stale subtree cache entries") {
     CHECK(service.load_cached_entries(root_path).empty());
 }
 
+TEST_CASE("Recursive cache ignores entries inside opaque ebook bundles") {
+    TempDir config_dir;
+    EnvVarGuard config_guard("AI_FILE_SORTER_CONFIG_DIR", config_dir.path().string());
+    Settings settings;
+    DatabaseManager db(settings.get_config_dir());
+    CategorizationService service(settings, db, nullptr);
+
+    TempDir data_dir;
+    const std::string root_path = data_dir.path().string();
+    const auto image_dir = data_dir.path() / "Sample.epub" / "OEBPS" / "Images";
+    std::filesystem::create_directories(image_dir);
+
+    const auto resolved = db.resolve_category("Images", "Book Covers");
+    REQUIRE(resolved.taxonomy_id > 0);
+    REQUIRE(db.insert_or_update_file_with_categorization(
+        "cover.jpg", "F", image_dir.string(), resolved, false, std::string(), false));
+    REQUIRE(db.insert_or_update_file_with_categorization(
+        "Sample.epub", "F", root_path, resolved, false, std::string(), false));
+
+    settings.set_include_subdirectories(true);
+    const auto cached = service.load_cached_entries(root_path);
+    REQUIRE(cached.size() == 1);
+    CHECK(cached.front().file_name == "Sample.epub");
+}
+
 TEST_CASE("ResultsCoordinator respects full-path cache keys for recursive scans") {
     TempDir data_dir;
     const auto root_file = data_dir.path() / "sample.txt";
@@ -464,7 +497,122 @@ TEST_CASE("DocumentTextAnalyzer handles UTF-8 filenames") {
     const auto result = analyzer.analyze(document_path, llm);
 
     CHECK(llm.last_prompt.find(unicode_name) != std::string::npos);
-    CHECK(result.suggested_name == utf8_string(u8"시장_분석.txt"));
+    CHECK(result.suggested_name == utf8_string(u8"시장 분석.txt"));
+}
+
+TEST_CASE("DocumentTextAnalyzer prefers embedded document title metadata") {
+    TempDir data_dir;
+    const auto document_path = data_dir.path() / "scan.docx";
+    create_zip_archive(
+        document_path,
+        {{"word/document.xml",
+          "<w:document><w:body><w:p><w:r><w:t>Quarterly report body text.</w:t></w:r></w:p></w:body></w:document>"},
+         {"docProps/core.xml",
+          "<cp:coreProperties><dc:title>Quarterly Report</dc:title></cp:coreProperties>"}});
+
+    PromptCapturingLLM llm;
+    DocumentTextAnalyzer analyzer;
+
+    const auto result = analyzer.analyze(document_path, llm);
+
+    CHECK(llm.last_prompt.find("Quarterly Report") != std::string::npos);
+    CHECK(result.suggested_name == "Quarterly Report.docx");
+}
+
+TEST_CASE("DocumentTextAnalyzer extracts EPUB bibliographic names strictly") {
+    TempDir data_dir;
+    const auto document_path = data_dir.path() / "9780000000000.epub";
+    create_zip_archive(
+        document_path,
+        {{"META-INF/container.xml",
+          R"(<container><rootfiles><rootfile full-path="OEBPS/content.opf" media-type="application/oebps-package+xml"/></rootfiles></container>)"},
+         {"OEBPS/content.opf",
+          R"(<package><metadata><dc:title>Embedded Systems</dc:title><dc:creator>Jane Doe</dc:creator><dc:date>2024-05-01</dc:date></metadata><manifest><item id="ch1" href="chapter1.xhtml" media-type="application/xhtml+xml"/></manifest><spine><itemref idref="ch1"/></spine></package>)"},
+         {"OEBPS/chapter1.xhtml",
+          R"(<html><head><style>body { color: black; }</style></head><body><h1>Embedded Systems</h1><p>Jane Doe</p><p>Embedded systems body text.</p></body></html>)"}});
+
+    PromptCapturingLLM llm(
+        R"({"summary":"Book about embedded systems","type":"book","subject":"embedded systems","title":"Embedded Systems","subtitle":null,"authors":["Jane Doe"],"year":"2024","publisher":null,"confidence":"high"})");
+    DocumentTextAnalyzer analyzer;
+
+    const auto result = analyzer.analyze(document_path, llm);
+
+    CHECK(result.suggested_name == "Embedded Systems - Jane Doe (2024).epub");
+    CHECK(llm.last_prompt.find("EPUB METADATA") != std::string::npos);
+    CHECK(llm.last_prompt.find("Jane Doe") != std::string::npos);
+}
+
+TEST_CASE("DocumentTextAnalyzer keeps descriptive original document titles") {
+    TempDir data_dir;
+    const std::string file_name =
+        "Embedded Systems Foundations of Cyber-Physical Systems, and the Internet of Things.docx";
+    const auto document_path = data_dir.path() / file_name;
+    create_zip_archive(
+        document_path,
+        {{"word/document.xml",
+          "<w:document><w:body><w:p><w:r><w:t>Embedded systems body text.</w:t></w:r></w:p></w:body></w:document>"},
+         {"docProps/core.xml",
+          "<cp:coreProperties><dc:title>Embedded Systems</dc:title></cp:coreProperties>"}});
+
+    PromptCapturingLLM llm;
+    DocumentTextAnalyzer analyzer;
+
+    const auto result = analyzer.analyze(document_path, llm);
+
+    CHECK(result.suggested_name ==
+          "Embedded Systems Foundations of Cyber Physical Systems and the Internet of Things.docx");
+}
+
+TEST_CASE("DocumentTextAnalyzer cleans library metadata from descriptive filenames") {
+    TempDir data_dir;
+    const std::string file_name =
+        "Project Management ToolBox_ Tools and Techniques for the Practicing Project Manager"
+        "{Cynthia Snyder Dionisio, Russ J. Martinelli}(2025, Wiley){111061920} libgen.li.docx";
+    const auto document_path = data_dir.path() / file_name;
+    create_zip_archive(
+        document_path,
+        {{"word/document.xml",
+          "<w:document><w:body><w:p><w:r><w:t>Project management body text.</w:t></w:r></w:p></w:body></w:document>"},
+         {"docProps/core.xml",
+          "<cp:coreProperties><dc:title>Project Management ToolBox</dc:title></cp:coreProperties>"}});
+
+    PromptCapturingLLM llm;
+    DocumentTextAnalyzer analyzer;
+
+    const auto result = analyzer.analyze(document_path, llm);
+
+    CHECK(result.suggested_name ==
+          "Project Management ToolBox Tools and Techniques for the Practicing Project Manager.docx");
+}
+
+TEST_CASE("DocumentTextAnalyzer repairs short cached document suggestions") {
+    const std::string original =
+        "Embedded Systems Foundations of Cyber-Physical Systems, and the Internet of Things.pdf";
+
+    CHECK(DocumentTextAnalyzer::prefer_descriptive_original_name(
+              original, "libro sistemas incrustados.pdf") == original);
+    CHECK(DocumentTextAnalyzer::prefer_descriptive_original_name(
+              "978-3-030-60910-8.pdf", "libro sistemas incrustados.pdf") ==
+          "libro sistemas incrustados.pdf");
+}
+
+TEST_CASE("DocumentTextAnalyzer uses an AI title when filename and metadata are not descriptive") {
+    TempDir data_dir;
+    const auto document_path = data_dir.path() / "978-3-030-60910-8.docx";
+    create_zip_archive(
+        document_path,
+        {{"word/document.xml",
+          "<w:document><w:body><w:p><w:r><w:t>Embedded systems body text.</w:t></w:r></w:p></w:body></w:document>"}});
+
+    PromptCapturingLLM llm(utf8_string(
+        u8R"({"summary":"Book about embedded systems","type":"","subject":"embedded systems","title":"Embedded Systems Foundations of Cyber-Physical Systems"})"));
+    DocumentTextAnalyzer analyzer;
+
+    const auto result = analyzer.analyze(document_path, llm);
+
+    CHECK(result.suggested_name ==
+          "Embedded Systems Foundations of Cyber Physical Systems.docx");
+    CHECK(llm.last_prompt.find("document title") != std::string::npos);
 }
 
 TEST_CASE("StorageProviderRegistry resolves the local filesystem provider by default") {

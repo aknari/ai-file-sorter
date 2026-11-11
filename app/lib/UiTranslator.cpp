@@ -260,6 +260,7 @@ void UiTranslator::translate_primary_controls(bool analysis_in_progress) const
         checkbox->setToolTip(tr("Skip categorization for picture files and only rename them."));
     }
     if (auto* button = raw_ptr(deps_.primary.image_options_toggle_button)) {
+        button->setText(tr("Picture options"));
         button->setToolTip(tr("Show or hide picture analysis options"));
     }
     if (auto* checkbox = raw_ptr(deps_.primary.analyze_documents_checkbox)) {
@@ -283,7 +284,18 @@ void UiTranslator::translate_primary_controls(bool analysis_in_progress) const
         checkbox->setToolTip(tr("Append the document creation date from metadata to the category label."));
     }
     if (auto* button = raw_ptr(deps_.primary.document_options_toggle_button)) {
+        button->setText(tr("Document options"));
         button->setToolTip(tr("Show or hide document analysis options"));
+    }
+    if (auto* button = raw_ptr(deps_.primary.document_rename_help_button)) {
+        button->setText(tr("?"));
+        button->setToolTip(tr("Show help for document filename templates"));
+        button->setAccessibleName(tr("Document filename template help"));
+    }
+    if (auto* button = raw_ptr(deps_.primary.image_rename_help_button)) {
+        button->setText(tr("?"));
+        button->setToolTip(tr("Show help for picture filename templates"));
+        button->setAccessibleName(tr("Picture filename template help"));
     }
     if (auto* button = raw_ptr(deps_.primary.analyze_button)) {
         button->setText(analysis_in_progress ? tr("Stop analyzing") : tr("Analyze folder"));

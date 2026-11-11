@@ -16,11 +16,11 @@
 
 namespace {
 
-constexpr int kFilenameLocalizationCompletionTokens = 96;
+constexpr int kFilenameLocalizationCompletionTokens = 128;
 constexpr std::size_t kMinimumLocalizedFilenameWords = 1;
-constexpr std::size_t kMaximumLocalizedFilenameWords = 12;
+constexpr std::size_t kMaximumLocalizedFilenameWords = 16;
 constexpr std::size_t kMinimumLocalizedFilenameLength = 24;
-constexpr std::size_t kMaximumLocalizedFilenameLength = 96;
+constexpr std::size_t kMaximumLocalizedFilenameLength = 120;
 constexpr std::size_t kLocalizedFilenameLengthSlack = 24;
 
 QString sanitize_utf8_text(const std::string& value)
@@ -149,7 +149,7 @@ std::string FilenameLocalizationService::build_prompt(const std::string& stem,
         "Rules:\n"
         "- Preserve the original meaning.\n"
         "- Keep proper nouns unchanged when appropriate.\n"
-        "- Use lowercase words separated by underscores.\n"
+        "- Use lowercase words separated by spaces (no underscores or hyphens).\n"
         "- Do not include a file extension.\n"
         "- Do not include quotes, JSON, or explanations.\n"
         "- If the stem is already natural in {}, keep it unchanged.\n"
@@ -199,7 +199,7 @@ std::string FilenameLocalizationService::sanitize_stem(const std::string& value,
     QString joined;
     for (std::size_t index = 0; index < words.size(); ++index) {
         if (index > 0) {
-            joined.append('_');
+            joined.append(' ');
         }
         joined.append(QString::fromUtf8(words[index].c_str()));
     }
@@ -207,7 +207,7 @@ std::string FilenameLocalizationService::sanitize_stem(const std::string& value,
     if (joined.size() > static_cast<qsizetype>(max_length)) {
         joined = joined.left(static_cast<qsizetype>(max_length));
     }
-    while (!joined.isEmpty() && joined.endsWith('_')) {
+    while (!joined.isEmpty() && (joined.endsWith(' ') || joined.endsWith('_'))) {
         joined.chop(1);
     }
 

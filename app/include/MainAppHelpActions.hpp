@@ -11,6 +11,15 @@ class MainAppHelpActions {
 public:
     static void show_about(QWidget* parent);
     static void show_quick_start(QWidget* parent);
+    /**
+     * @brief Shows the contextual filename template reference.
+     * @param parent Parent widget for the dialog.
+     * @param document_mode True for document templates, false for image templates.
+     * @param current_template Template currently used for that file type.
+     */
+    static void show_filename_template_help(QWidget* parent,
+                                            bool document_mode,
+                                            const QString& current_template);
     static void show_agpl_info(QWidget* parent);
     static QString faq_page_url();
     static bool open_faq_page();

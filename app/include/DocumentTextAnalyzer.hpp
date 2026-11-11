@@ -21,6 +21,14 @@ struct DocumentAnalysisResult {
      * @brief Suggested filename based on the analyzed content (including extension).
      */
     std::string suggested_name;
+    /**
+     * @brief Short document type emitted by the LLM (for example `invoice`).
+     */
+    std::string document_type;
+    /**
+     * @brief Short descriptive subject emitted by the LLM.
+     */
+    std::string subject;
 };
 
 /**
@@ -48,6 +56,18 @@ public:
          * @brief Maximum number of tokens to generate for the response.
          */
         int max_tokens = kDefaultDocumentAnalyzerMaxTokens;
+        /**
+         * @brief Template used to assemble the final filename stem.
+         */
+        std::string filename_template = "{date} {type} {title}";
+        /**
+         * @brief Transliterate accented characters to ASCII when composing names.
+         */
+        bool ascii_fold = true;
+        /**
+         * @brief Maximum rendered filename stem length.
+         */
+        size_t template_max_length = 100;
     };
 
     /**
@@ -75,16 +95,46 @@ public:
      */
     static bool is_supported_document(const std::filesystem::path& path);
     /**
+     * @brief Returns true when the path is a PDF document.
+     */
+    static bool is_pdf(const std::filesystem::path& path);
+    /**
+     * @brief Returns true when the path is an EPUB document.
+     */
+    static bool is_epub(const std::filesystem::path& path);
+    /**
      * @brief Attempts to read a creation date from supported document metadata.
      * @param path Document path to inspect.
      * @return Creation date formatted as YYYY-MM when available.
      */
     static std::optional<std::string> extract_creation_date(const std::filesystem::path& path);
+    /**
+     * @brief Attempts to read a document title from embedded metadata.
+     * @param path Document path to inspect.
+     * @return Title from PDF, DOCX, or OpenDocument metadata when available.
+     */
+    static std::optional<std::string> extract_metadata_title(const std::filesystem::path& path);
+    /**
+     * @brief Replaces an overly short cached suggestion when the original filename is descriptive.
+     * @param original_name Current filename including extension.
+     * @param suggested_name Cached suggestion including extension.
+     * @return The cleaned original filename when it is substantially more descriptive;
+     *         otherwise the supplied suggestion.
+     */
+    static std::string prefer_descriptive_original_name(const std::string& original_name,
+                                                        const std::string& suggested_name);
 
 private:
+    DocumentAnalysisResult analyze_generic(const std::filesystem::path& document_path,
+                                            ILLMClient& llm) const;
+    std::string extract_pdf_name(const std::filesystem::path& document_path,
+                                 ILLMClient& llm) const;
+    std::string extract_epub_name(const std::filesystem::path& document_path,
+                                  ILLMClient& llm) const;
     std::string extract_text(const std::filesystem::path& path) const;
     std::string build_prompt(const std::string& excerpt,
-                             const std::string& file_name) const;
+                             const std::string& file_name,
+                             const std::string& metadata_title) const;
     std::string sanitize_filename(const std::string& value,
                                   size_t max_words,
                                   size_t max_length) const;

@@ -289,7 +289,13 @@ if(APPLE)
     endif()
     if(_aifs_macos_arches MATCHES "(^|;)(arm64|aarch64)($|;)")
         # Qt 6 headers on newer Apple SDKs require arm_acle.h for __yield().
-        add_compile_options(-include arm_acle.h)
+        # Keep it out of ASM: the embedded Metal library is a .s file with .incbin.
+        add_compile_options(
+            "$<$<COMPILE_LANGUAGE:C>:-include>"
+            "$<$<COMPILE_LANGUAGE:C>:arm_acle.h>"
+            "$<$<COMPILE_LANGUAGE:CXX>:-include>"
+            "$<$<COMPILE_LANGUAGE:CXX>:arm_acle.h>"
+        )
     endif()
 endif()
 
@@ -1551,6 +1557,7 @@ if(AI_FILE_SORTER_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_main_app_visual_fallback.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_settings_image_options.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_windows_network_locations.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_filename_template.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_ui_translator.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_cache_maintenance_service.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_cache_maintenance_dialog.cpp"
