@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
+#include <cstdlib>
 #include <iostream>
 #include <memory>
 #include <optional>
@@ -19,7 +20,12 @@
 #include <spdlog/fmt/fmt.h>
 
 namespace {
-constexpr double kSimilarityThreshold = 0.85;
+// Keep fuzzy matching for plural/typo variants, but do not let a dropped
+// accented vowel (for example "peliculas" vs "pelculas") collapse two
+// labels that are meant to remain distinct.
+constexpr double kSimilarityThreshold = 0.90;
+constexpr int kTaxonomyNormalizationVersion = 2;
+constexpr char kTaxonomyNormalizationVersionKey[] = "taxonomy_normalization_version";
 constexpr char kLegacyMusicCategoryNormalized[] = "music";
 constexpr char kCanonicalAudioCategoryDisplay[] = "Audio";
 constexpr char kLegacyInstallerBuildersNormalized[] = "installer builders";
@@ -185,6 +191,19 @@ std::string build_recursive_dir_pattern(const std::string& directory_path) {
     return escaped;
 }
 
+bool names_match_ignoring_case(const std::string& lhs, const std::string& rhs) {
+    if (lhs.size() != rhs.size()) {
+        return false;
+    }
+    for (std::size_t i = 0; i < lhs.size(); ++i) {
+        if (std::tolower(static_cast<unsigned char>(lhs[i])) !=
+            std::tolower(static_cast<unsigned char>(rhs[i]))) {
+            return false;
+        }
+    }
+    return true;
+}
+
 std::optional<CategorizedFile> build_categorized_entry(sqlite3_stmt* stmt) {
     const char *file_dir_path = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 0));
     const char *file_name = reinterpret_cast<const char *>(sqlite3_column_text(stmt, 1));
@@ -218,6 +237,13 @@ std::optional<CategorizedFile> build_categorized_entry(sqlite3_stmt* stmt) {
     bool rename_applied = false;
     if (sqlite3_column_count(stmt) > 9 && sqlite3_column_type(stmt, 9) != SQLITE_NULL) {
         rename_applied = sqlite3_column_int(stmt, 9) != 0;
+    }
+
+    // A cached suggestion identical to the current name is not a rename: treating
+    // it as one marks the entry as already renamed and stops the document pass
+    // from ever proposing a real name for the file.
+    if (!rename_applied && !suggested.empty() && names_match_ignoring_case(suggested, name)) {
+        suggested.clear();
     }
 
     const bool has_labels = has_label_content(cat) && has_label_content(subcat);
@@ -262,6 +288,7 @@ DatabaseManager::DatabaseManager(std::string config_dir)
 
     initialize_schema();
     initialize_taxonomy_schema();
+    ensure_normalization_cache_version();
     load_taxonomy_cache();
     if (migrate_legacy_taxonomy_labels()) {
         load_taxonomy_cache();
@@ -300,6 +327,17 @@ void DatabaseManager::initialize_schema() {
     char *error_msg = nullptr;
     if (sqlite3_exec(db, create_table_sql, nullptr, nullptr, &error_msg) != SQLITE_OK) {
         db_log(spdlog::level::err, "Failed to create file_categorization table: {}", error_msg);
+        sqlite3_free(error_msg);
+    }
+
+    const char* metadata_table_sql = R"(
+        CREATE TABLE IF NOT EXISTS cache_metadata (
+            key TEXT PRIMARY KEY,
+            value TEXT NOT NULL
+        );
+    )";
+    if (sqlite3_exec(db, metadata_table_sql, nullptr, nullptr, &error_msg) != SQLITE_OK) {
+        db_log(spdlog::level::err, "Failed to create cache metadata table: {}", error_msg);
         sqlite3_free(error_msg);
     }
 
@@ -432,6 +470,124 @@ void DatabaseManager::initialize_taxonomy_schema() {
         db_log(spdlog::level::err, "Failed to create translation lookup index: {}", error_msg);
         sqlite3_free(error_msg);
     }
+}
+
+void DatabaseManager::ensure_normalization_cache_version()
+{
+    if (!db) {
+        return;
+    }
+
+    int stored_version = 0;
+    bool has_stored_version = false;
+    sqlite3_stmt* stmt = nullptr;
+    const char* select_version_sql =
+        "SELECT value FROM cache_metadata WHERE key = ? LIMIT 1;";
+    if (sqlite3_prepare_v2(db, select_version_sql, -1, &stmt, nullptr) == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, kTaxonomyNormalizationVersionKey, -1, SQLITE_STATIC);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const auto* value = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            stored_version = value ? std::atoi(value) : 0;
+            has_stored_version = true;
+        }
+    }
+    if (stmt) {
+        sqlite3_finalize(stmt);
+        stmt = nullptr;
+    }
+
+    if (has_stored_version && stored_version >= kTaxonomyNormalizationVersion) {
+        return;
+    }
+
+    if (!has_stored_version) {
+        bool has_cache_rows = false;
+        const char* count_cache_sql =
+            "SELECT (SELECT COUNT(*) FROM category_taxonomy) + "
+            "(SELECT COUNT(*) FROM category_translation) + "
+            "(SELECT COUNT(*) FROM file_categorization);";
+        if (sqlite3_prepare_v2(db, count_cache_sql, -1, &stmt, nullptr) == SQLITE_OK) {
+            if (sqlite3_step(stmt) == SQLITE_ROW) {
+                has_cache_rows = sqlite3_column_int(stmt, 0) > 0;
+            }
+        }
+        if (stmt) {
+            sqlite3_finalize(stmt);
+            stmt = nullptr;
+        }
+        if (has_cache_rows && !invalidate_normalization_caches()) {
+            db_log(spdlog::level::err,
+                   "Failed to invalidate caches for taxonomy normalization version {}.",
+                   kTaxonomyNormalizationVersion);
+            return;
+        }
+    } else if (!invalidate_normalization_caches()) {
+        db_log(spdlog::level::err,
+               "Failed to invalidate caches for taxonomy normalization version {} (stored {}).",
+               kTaxonomyNormalizationVersion,
+               stored_version);
+        return;
+    }
+
+    const char* set_version_sql =
+        "INSERT INTO cache_metadata(key, value) VALUES(?, ?) "
+        "ON CONFLICT(key) DO UPDATE SET value = excluded.value;";
+    if (sqlite3_prepare_v2(db, set_version_sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        db_log(spdlog::level::err,
+               "Failed to prepare taxonomy normalization version update: {}",
+               sqlite3_errmsg(db));
+        return;
+    }
+    const std::string version = std::to_string(kTaxonomyNormalizationVersion);
+    sqlite3_bind_text(stmt, 1, kTaxonomyNormalizationVersionKey, -1, SQLITE_STATIC);
+    sqlite3_bind_text(stmt, 2, version.c_str(), -1, SQLITE_TRANSIENT);
+    if (sqlite3_step(stmt) != SQLITE_DONE) {
+        db_log(spdlog::level::err,
+               "Failed to store taxonomy normalization version {}: {}",
+               kTaxonomyNormalizationVersion,
+               sqlite3_errmsg(db));
+    }
+    sqlite3_finalize(stmt);
+}
+
+bool DatabaseManager::invalidate_normalization_caches()
+{
+    if (!db) {
+        return false;
+    }
+
+    const char* sql = R"(
+        BEGIN IMMEDIATE TRANSACTION;
+        UPDATE file_categorization SET taxonomy_id = NULL
+            WHERE IFNULL(rename_applied, 0) != 0;
+        DELETE FROM category_translation;
+        DELETE FROM category_alias;
+        DELETE FROM category_taxonomy;
+        DELETE FROM file_categorization WHERE IFNULL(rename_applied, 0) = 0;
+        COMMIT;
+    )";
+
+    char* error_msg = nullptr;
+    if (sqlite3_exec(db, sql, nullptr, nullptr, &error_msg) != SQLITE_OK) {
+        db_log(spdlog::level::err,
+               "Failed to invalidate normalization caches: {}",
+               error_msg ? error_msg : sqlite3_errmsg(db));
+        if (error_msg) {
+            sqlite3_free(error_msg);
+        }
+        sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
+        return false;
+    }
+
+    taxonomy_entries.clear();
+    canonical_lookup.clear();
+    alias_lookup.clear();
+    taxonomy_index.clear();
+    translation_entries.clear();
+    translation_lookup.clear();
+    cached_results.clear();
+    db_log(spdlog::level::info, "Invalidated categorization caches for taxonomy normalization version {}.", kTaxonomyNormalizationVersion);
+    return true;
 }
 
 void DatabaseManager::load_taxonomy_cache() {
@@ -934,10 +1090,12 @@ std::pair<int, double> DatabaseManager::find_fuzzy_match(
     double best_score = 0.0;
     int best_id = -1;
     for (const auto &entry : taxonomy_entries) {
-        double category_score = string_similarity(norm_category, entry.normalized_category);
-        double subcategory_score =
+        const double category_score = string_similarity(norm_category, entry.normalized_category);
+        const double subcategory_score =
             string_similarity(norm_subcategory, entry.normalized_subcategory);
-        double combined = (category_score + subcategory_score) / 2.0;
+        // Require both labels to be close. Averaging let an exact subcategory
+        // rescue a category missing an accented vowel (for example Musica/Msica).
+        const double combined = std::min(category_score, subcategory_score);
         if (combined > best_score) {
             best_score = combined;
             best_id = entry.id;
@@ -1081,6 +1239,18 @@ DatabaseManager::resolve_category_for_language(const std::string& category,
 }
 
 std::optional<DatabaseManager::ResolvedCategory>
+DatabaseManager::get_taxonomy_entry(int taxonomy_id) const {
+    if (taxonomy_id <= 0) {
+        return std::nullopt;
+    }
+    const auto* entry = find_taxonomy_entry(taxonomy_id);
+    if (!entry) {
+        return std::nullopt;
+    }
+    return ResolvedCategory{entry->id, entry->category, entry->subcategory};
+}
+
+std::optional<DatabaseManager::ResolvedCategory>
 DatabaseManager::get_category_translation(int taxonomy_id,
                                           CategoryLanguage language) const {
     if (language == CategoryLanguage::English || taxonomy_id <= 0) {
@@ -1098,6 +1268,9 @@ DatabaseManager::localize_category(const ResolvedCategory& resolved,
                                    CategoryLanguage language) const {
     if (language == CategoryLanguage::English || resolved.taxonomy_id <= 0) {
         return resolved;
+    }
+    if (const auto overridden = find_user_label_override(resolved.taxonomy_id, language)) {
+        return *overridden;
     }
     if (const auto translated = get_category_translation(resolved.taxonomy_id, language)) {
         return *translated;
@@ -1117,11 +1290,63 @@ CategorizedFile DatabaseManager::localize_categorized_file(const CategorizedFile
     if (localized.canonical_subcategory.empty()) {
         localized.canonical_subcategory = entry.subcategory;
     }
+    if (const auto overridden = find_user_label_override(entry.taxonomy_id, language)) {
+        localized.category = overridden->category;
+        localized.subcategory = overridden->subcategory;
+        return localized;
+    }
     if (const auto translated = get_category_translation(entry.taxonomy_id, language)) {
         localized.category = translated->category;
         localized.subcategory = translated->subcategory;
     }
     return localized;
+}
+
+void DatabaseManager::set_user_label_override(const std::string& category,
+                                              const std::string& subcategory,
+                                              CategoryLanguage language,
+                                              const std::string& display_category,
+                                              const std::string& display_subcategory) {
+    if (language == CategoryLanguage::English || category.empty() || display_category.empty()) {
+        return;
+    }
+
+    const std::string normalized_category = normalize_label(category);
+    std::string normalized_subcategory = normalize_label(subcategory);
+    if (normalized_subcategory.empty()) {
+        normalized_subcategory = "general";
+    }
+    if (normalized_category.empty()) {
+        return;
+    }
+
+    user_label_overrides_[make_translation_lookup_key(language,
+                                                       normalized_category,
+                                                       normalized_subcategory)] =
+        ResolvedCategory{-1, display_category, display_subcategory};
+}
+
+void DatabaseManager::clear_user_label_overrides() {
+    user_label_overrides_.clear();
+}
+
+std::optional<DatabaseManager::ResolvedCategory>
+DatabaseManager::find_user_label_override(int taxonomy_id,
+                                          CategoryLanguage language) const {
+    if (language == CategoryLanguage::English || taxonomy_id <= 0) {
+        return std::nullopt;
+    }
+
+    const auto* entry = find_taxonomy_entry(taxonomy_id);
+    if (!entry) {
+        return std::nullopt;
+    }
+    const auto it = user_label_overrides_.find(make_translation_lookup_key(
+        language, entry->normalized_category, entry->normalized_subcategory));
+    if (it == user_label_overrides_.end()) {
+        return std::nullopt;
+    }
+    return ResolvedCategory{entry->id, it->second.category, it->second.subcategory};
 }
 
 bool DatabaseManager::upsert_category_translation(int taxonomy_id,
@@ -1200,6 +1425,14 @@ bool DatabaseManager::insert_or_update_file_with_categorization(
     bool rename_applied) {
     if (!db) return false;
 
+    // Never cache "the suggested name is the current name": it would come back as
+    // a suggestion that changes nothing and suppresses later rename proposals.
+    std::string stored_suggested_name = suggested_name;
+    if (!rename_applied && !stored_suggested_name.empty() &&
+        names_match_ignoring_case(stored_suggested_name, file_name)) {
+        stored_suggested_name.clear();
+    }
+
     const char *sql = R"(
         INSERT INTO file_categorization
             (file_name, file_type, dir_path, category, subcategory, suggested_name,
@@ -1230,7 +1463,7 @@ bool DatabaseManager::insert_or_update_file_with_categorization(
     sqlite3_bind_text(stmt, 3, dir_path.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 4, resolved.category.c_str(), -1, SQLITE_TRANSIENT);
     sqlite3_bind_text(stmt, 5, resolved.subcategory.c_str(), -1, SQLITE_TRANSIENT);
-    sqlite3_bind_text(stmt, 6, suggested_name.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 6, stored_suggested_name.c_str(), -1, SQLITE_TRANSIENT);
 
     if (resolved.taxonomy_id > 0) {
         sqlite3_bind_int(stmt, 7, resolved.taxonomy_id);

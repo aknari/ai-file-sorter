@@ -1,262 +1,155 @@
 #include "ImageDecodeUtils.hpp"
 
-#include "Logger.hpp"
-
-#include <QBuffer>
-#include <QFile>
-#include <QFileInfo>
-#include <QImageReader>
-#include <QIODevice>
-#include <QLibrary>
-
-#include <array>
+#include <algorithm>
 #include <cstddef>
-#include <cstdint>
+
+#if defined(__APPLE__)
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <ImageIO/ImageIO.h>
+#endif
+
+namespace ImageDecodeUtils {
+
+#if defined(__APPLE__)
 
 namespace {
 
-constexpr const char* kPngImageFormat = "PNG";
-
-bool is_webp_path(const QString& image_path)
+void assign_error(std::string* error, const std::string& message)
 {
-    return QFileInfo(image_path).suffix().compare(QStringLiteral("webp"), Qt::CaseInsensitive) == 0;
-}
-
-QSize scaled_decode_size(const QSize& original_size, const QSize& max_size)
-{
-    if (!original_size.isValid() || !max_size.isValid()) {
-        return {};
+    if (error) {
+        *error = message;
     }
-
-    return original_size.scaled(max_size, Qt::KeepAspectRatio);
-}
-
-QImage scale_decoded_image(const QImage& image, const QSize& max_size)
-{
-    if (image.isNull() || !max_size.isValid()) {
-        return image;
-    }
-    if (image.width() <= max_size.width() && image.height() <= max_size.height()) {
-        return image;
-    }
-
-    return image.scaled(max_size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-}
-
-class WebpDecoderLibrary {
-public:
-    using GetInfoFn = int (*)(const std::uint8_t*, size_t, int*, int*);
-    using DecodeRgbaFn = std::uint8_t* (*)(const std::uint8_t*, size_t, int*, int*);
-    using FreeFn = void (*)(void*);
-
-    WebpDecoderLibrary()
-    {
-        std::string last_error;
-        for (const auto& candidate : library_candidates()) {
-            if (candidate.version > 0) {
-                library_.setFileNameAndVersion(QString::fromLatin1(candidate.name),
-                                               candidate.version);
-            } else {
-                library_.setFileName(QString::fromLatin1(candidate.name));
-            }
-            if (!library_.load()) {
-                last_error = library_.errorString().toStdString();
-                continue;
-            }
-
-            get_info_ = reinterpret_cast<GetInfoFn>(library_.resolve("WebPGetInfo"));
-            decode_rgba_ = reinterpret_cast<DecodeRgbaFn>(library_.resolve("WebPDecodeRGBA"));
-            free_ = reinterpret_cast<FreeFn>(library_.resolve("WebPFree"));
-            if (available()) {
-                return;
-            }
-
-            error_ = "libwebp loaded but required decoder symbols were missing.";
-            library_.unload();
-            get_info_ = nullptr;
-            decode_rgba_ = nullptr;
-            free_ = nullptr;
-        }
-
-        if (error_.empty()) {
-            error_ = last_error.empty() ? "libwebp was not found." : last_error;
-        }
-    }
-
-    bool available() const
-    {
-        return get_info_ && decode_rgba_ && free_;
-    }
-
-    QImage decode_rgba(const QByteArray& bytes, std::string* error) const
-    {
-        if (!available()) {
-            if (error) {
-                *error = error_;
-            }
-            return {};
-        }
-        if (bytes.isEmpty()) {
-            if (error) {
-                *error = "WebP file is empty.";
-            }
-            return {};
-        }
-
-        const auto* data = reinterpret_cast<const std::uint8_t*>(bytes.constData());
-        const size_t size = static_cast<size_t>(bytes.size());
-        int width = 0;
-        int height = 0;
-        if (get_info_(data, size, &width, &height) == 0 || width <= 0 || height <= 0) {
-            if (error) {
-                *error = "libwebp rejected the WebP header.";
-            }
-            return {};
-        }
-
-        std::uint8_t* decoded = decode_rgba_(data, size, &width, &height);
-        if (!decoded || width <= 0 || height <= 0) {
-            if (decoded) {
-                free_(decoded);
-            }
-            if (error) {
-                *error = "libwebp could not decode the image.";
-            }
-            return {};
-        }
-
-        const int bytes_per_line = width * 4;
-        QImage view(decoded, width, height, bytes_per_line, QImage::Format_RGBA8888);
-        QImage copy = view.copy();
-        free_(decoded);
-        if (copy.isNull() && error) {
-            *error = "Decoded WebP pixels could not be copied into a QImage.";
-        }
-        return copy;
-    }
-
-private:
-    struct LibraryCandidate {
-        const char* name;
-        int version;
-    };
-
-    static const std::array<LibraryCandidate, 13>& library_candidates()
-    {
-        static const std::array<LibraryCandidate, 13> candidates = {{
-            {"webp", 7},
-            {"webp", 0},
-            {"libwebp", 0},
-            {"libwebp.so.7", 0},
-            {"libwebp.so", 0},
-            {"/lib/x86_64-linux-gnu/libwebp.so.7", 0},
-            {"/usr/lib/x86_64-linux-gnu/libwebp.so.7", 0},
-            {"/lib/aarch64-linux-gnu/libwebp.so.7", 0},
-            {"/usr/lib/aarch64-linux-gnu/libwebp.so.7", 0},
-            {"libwebp.7.dylib", 0},
-            {"libwebp.dylib", 0},
-            {"libwebp.dll", 0},
-            {"libwebp-7.dll", 0}
-        }};
-        return candidates;
-    }
-
-    QLibrary library_;
-    GetInfoFn get_info_{nullptr};
-    DecodeRgbaFn decode_rgba_{nullptr};
-    FreeFn free_{nullptr};
-    std::string error_;
-};
-
-QByteArray read_image_file_bytes(const QString& image_path, std::string* error)
-{
-    QFile file(image_path);
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (error) {
-            *error = file.errorString().toStdString();
-        }
-        return {};
-    }
-    return file.readAll();
-}
-
-QImage decode_webp_with_libwebp(const QString& image_path,
-                                const QSize& max_size,
-                                std::string* error)
-{
-    std::string read_error;
-    const QByteArray bytes = read_image_file_bytes(image_path, &read_error);
-    if (bytes.isEmpty()) {
-        if (error) {
-            *error = read_error.empty() ? "WebP file is empty." : read_error;
-        }
-        return {};
-    }
-
-    static const WebpDecoderLibrary decoder;
-    return scale_decoded_image(decoder.decode_rgba(bytes, error), max_size);
 }
 
 } // namespace
 
-namespace ImageDecodeUtils {
-
-QImage decode_image_with_webp_fallback(const QString& image_path,
-                                       const QSize& max_size,
-                                       std::string* error)
+bool decode_image_to_png(const std::string& image_path_utf8,
+                         int max_width,
+                         int max_height,
+                         DecodedImage& decoded,
+                         std::string* error)
 {
-    QImageReader reader(image_path);
-    reader.setAutoTransform(true);
-
-    const QSize requested_size = scaled_decode_size(reader.size(), max_size);
-    if (requested_size.isValid()) {
-        reader.setScaledSize(requested_size);
+    decoded = DecodedImage{};
+    if (image_path_utf8.empty()) {
+        assign_error(error, "Image path is empty.");
+        return false;
     }
 
-    const QImage qt_image = reader.read();
-    if (!qt_image.isNull()) {
-        return qt_image;
+    CFStringRef path_string = CFStringCreateWithCString(kCFAllocatorDefault,
+                                                        image_path_utf8.c_str(),
+                                                        kCFStringEncodingUTF8);
+    if (!path_string) {
+        assign_error(error, "Image path is not valid UTF-8.");
+        return false;
     }
 
-    const std::string qt_error = reader.errorString().toUtf8().toStdString();
-    if (!is_webp_path(image_path)) {
-        if (error) {
-            *error = qt_error.empty() ? "Qt image reader could not decode the image." : qt_error;
-        }
-        return {};
+    CFURLRef url = CFURLCreateWithFileSystemPath(kCFAllocatorDefault,
+                                                 path_string,
+                                                 kCFURLPOSIXPathStyle,
+                                                 false);
+    CFRelease(path_string);
+    if (!url) {
+        assign_error(error, "Could not build an image file URL.");
+        return false;
     }
 
-    std::string libwebp_error;
-    QImage libwebp_image = decode_webp_with_libwebp(image_path, max_size, &libwebp_error);
-    if (!libwebp_image.isNull()) {
-        if (auto logger = Logger::get_logger("core_logger")) {
-            const std::string image_path_utf8 = image_path.toUtf8().toStdString();
-            logger->info("Decoded WebP image '{}' with libwebp fallback after Qt reader failed: {}",
-                         image_path_utf8,
-                         qt_error.empty() ? "unknown Qt image reader error" : qt_error);
-        }
-        return libwebp_image;
+    CGImageSourceRef source = CGImageSourceCreateWithURL(url, nullptr);
+    CFRelease(url);
+    if (!source) {
+        assign_error(error, "ImageIO could not open the image file.");
+        return false;
     }
 
-    if (error) {
-        std::string message = "Failed to decode WebP image";
-        if (!qt_error.empty()) {
-            message += " (Qt: " + qt_error + ")";
-        }
-        if (!libwebp_error.empty()) {
-            message += " (libwebp: " + libwebp_error + ")";
-        }
-        *error = message;
+    CGImageRef image = nullptr;
+    const int longest_side = std::max(max_width, max_height);
+    if (longest_side > 0) {
+        const void* keys[] = {
+            kCGImageSourceCreateThumbnailFromImageAlways,
+            kCGImageSourceThumbnailMaxPixelSize,
+            kCGImageSourceCreateThumbnailWithTransform
+        };
+        int size = longest_side;
+        CFNumberRef pixel_size = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &size);
+        const void* values[] = {kCFBooleanTrue, pixel_size, kCFBooleanTrue};
+        CFDictionaryRef options = CFDictionaryCreate(kCFAllocatorDefault,
+                                                     keys,
+                                                     values,
+                                                     3,
+                                                     &kCFTypeDictionaryKeyCallBacks,
+                                                     &kCFTypeDictionaryValueCallBacks);
+        image = CGImageSourceCreateThumbnailAtIndex(source, 0, options);
+        CFRelease(options);
+        CFRelease(pixel_size);
     }
-    return {};
+
+    if (!image) {
+        image = CGImageSourceCreateImageAtIndex(source, 0, nullptr);
+    }
+    CFRelease(source);
+
+    if (!image) {
+        assign_error(error, "ImageIO could not decode the image.");
+        return false;
+    }
+
+    decoded.width = static_cast<int>(CGImageGetWidth(image));
+    decoded.height = static_cast<int>(CGImageGetHeight(image));
+
+    CFMutableDataRef data = CFDataCreateMutable(kCFAllocatorDefault, 0);
+    if (!data) {
+        CGImageRelease(image);
+        assign_error(error, "Could not allocate PNG output buffer.");
+        return false;
+    }
+
+    CGImageDestinationRef destination =
+        CGImageDestinationCreateWithData(data, CFSTR("public.png"), 1, nullptr);
+    if (!destination) {
+        CFRelease(data);
+        CGImageRelease(image);
+        assign_error(error, "Could not create a PNG encoder.");
+        return false;
+    }
+
+    CGImageDestinationAddImage(destination, image, nullptr);
+    const bool finished = CGImageDestinationFinalize(destination);
+    CFRelease(destination);
+    CGImageRelease(image);
+
+    if (!finished) {
+        CFRelease(data);
+        assign_error(error, "Could not encode the image as PNG.");
+        return false;
+    }
+
+    const CFIndex length = CFDataGetLength(data);
+    const UInt8* bytes = CFDataGetBytePtr(data);
+    if (length <= 0 || !bytes) {
+        CFRelease(data);
+        assign_error(error, "PNG encoder produced no output.");
+        return false;
+    }
+
+    decoded.png_bytes.assign(bytes, bytes + static_cast<std::size_t>(length));
+    CFRelease(data);
+    return true;
 }
 
-bool encode_image_as_png_bytes(const QImage& image, QByteArray& png_bytes)
+#else
+
+bool decode_image_to_png(const std::string&,
+                         int,
+                         int,
+                         DecodedImage& decoded,
+                         std::string* error)
 {
-    QBuffer buffer(&png_bytes);
-    return !image.isNull() &&
-           buffer.open(QIODevice::WriteOnly) &&
-           image.save(&buffer, kPngImageFormat);
+    decoded = DecodedImage{};
+    assign_error(error,
+                 "Image decoding for visual analysis is unavailable in this headless build.");
+    return false;
 }
+
+#endif
 
 } // namespace ImageDecodeUtils

@@ -68,6 +68,26 @@ public:
     };
 
     /**
+     * @brief User-selected display label for an existing taxonomy entry.
+     *
+     * The canonical category/subcategory remain the stable lookup keys; only
+     * the display labels change. Stored in the durable learning database so
+     * clearing the categorization cache does not discard the correction.
+     */
+    struct CategoryLabelOverride {
+        /** @brief Canonical category label, normally English. */
+        std::string category;
+        /** @brief Canonical subcategory label, normally English. */
+        std::string subcategory;
+        /** @brief Category language storage key, for example `spanish`. */
+        std::string language;
+        /** @brief User-facing category label to display. */
+        std::string display_category;
+        /** @brief User-facing subcategory label to display. */
+        std::string display_subcategory;
+    };
+
+    /**
      * @brief Ranked taxonomy candidate retrieved from learned user data.
      */
     struct RetrievedCandidate {
@@ -171,6 +191,31 @@ public:
      * @return True when the candidate was stored or already existed.
      */
     bool record_taxonomy_candidate(const TaxonomyCandidate& candidate, std::string* error = nullptr);
+    /**
+     * @brief Store a durable display-label correction for an existing taxonomy entry.
+     *
+     * The canonical labels identify the taxonomy; the display labels are what
+     * the review dialog and future categorizations should show.
+     *
+     * @param category Canonical category label.
+     * @param subcategory Canonical subcategory label.
+     * @param language Category language storage key.
+     * @param display_category User-facing category label.
+     * @param display_subcategory User-facing subcategory label.
+     * @param error Optional output for a human-readable failure reason.
+     * @return True when the override was stored successfully.
+     */
+    bool upsert_category_label_override(const std::string& category,
+                                        const std::string& subcategory,
+                                        const std::string& language,
+                                        const std::string& display_category,
+                                        const std::string& display_subcategory,
+                                        std::string* error = nullptr);
+    /**
+     * @brief Load all durable display-label corrections.
+     * @return Stored overrides in insertion order.
+     */
+    std::vector<CategoryLabelOverride> category_label_overrides() const;
     /**
      * @brief Import multiple user-owned taxonomy candidates in one transaction.
      * @param candidates Candidate category/subcategory labels to import.

@@ -1,5 +1,8 @@
 #include "DatabaseTaxonomyNormalizer.hpp"
 
+#include <QChar>
+#include <QString>
+
 #include <algorithm>
 #include <cctype>
 #include <optional>
@@ -337,29 +340,39 @@ CanonicalCategoryLabel canonicalize_category_label(const std::string& normalized
 
 std::string normalize_label(const std::string& input)
 {
-    std::string result;
-    result.reserve(input.size());
+    const QString text = QString::fromUtf8(input.data(), static_cast<int>(input.size()));
+    if (text.isEmpty()) {
+        return {};
+    }
 
-    bool last_was_space = true;
-    for (unsigned char ch : input) {
-        if (std::isalnum(ch)) {
-            result.push_back(static_cast<char>(std::tolower(ch)));
-            last_was_space = false;
-        } else if (std::isspace(ch)) {
-            if (!last_was_space) {
-                result.push_back(' ');
-                last_was_space = true;
-            }
+    // Decompose first so accents become a base letter plus a combining mark.
+    // Dropping the mark folds "Películas" to "peliculas" instead of deleting
+    // the accented vowel and producing "pelculas" (which collided with the
+    // separate, misspelled label "Pelculas").
+    const QString decomposed = text.normalized(QString::NormalizationForm_D);
+    QString folded;
+    folded.reserve(decomposed.size());
+    for (const QChar ch : decomposed) {
+        const auto category = ch.category();
+        if (category == QChar::Mark_NonSpacing ||
+            category == QChar::Mark_SpacingCombining ||
+            category == QChar::Mark_Enclosing) {
+            continue;
+        }
+        folded.append(ch);
+    }
+
+    const QString case_folded = folded.normalized(QString::NormalizationForm_C).toCaseFolded();
+    QString normalized;
+    normalized.reserve(case_folded.size());
+    for (const QChar ch : case_folded) {
+        if (ch.isLetterOrNumber()) {
+            normalized.append(ch);
+        } else if (!normalized.isEmpty() && !normalized.endsWith(QLatin1Char(' '))) {
+            normalized.append(QLatin1Char(' '));
         }
     }
-
-    while (!result.empty() && result.front() == ' ') {
-        result.erase(result.begin());
-    }
-    while (!result.empty() && result.back() == ' ') {
-        result.pop_back();
-    }
-    return result;
+    return normalized.trimmed().toUtf8().toStdString();
 }
 
 std::string strip_trailing_stopwords(const std::string& normalized)
@@ -460,6 +473,69 @@ NormalizedCategory normalize_category(std::string category, std::string subcateg
         normalized_subcategory,
         strip_trailing_stopwords(normalized_subcategory)
     };
+}
+
+bool is_minor_label_correction(const std::string& old_label,
+                               const std::string& new_label,
+                               std::string* reason)
+{
+    const auto reject = [&](const char* why) {
+        if (reason) {
+            *reason = why;
+        }
+        return false;
+    };
+
+    const std::string old_normalized = normalize_label(old_label);
+    const std::string new_normalized = normalize_label(new_label);
+    if (old_normalized.empty() && new_normalized.empty()) {
+        return true;
+    }
+    if (old_normalized.empty() || new_normalized.empty()) {
+        return reject("one label is empty");
+    }
+    if (old_normalized == new_normalized) {
+        return true;
+    }
+
+    const auto token_count = [](const std::string& value) {
+        std::istringstream stream(value);
+        std::string token;
+        std::size_t count = 0;
+        while (stream >> token) {
+            ++count;
+        }
+        return count;
+    };
+    if (token_count(old_normalized) != token_count(new_normalized)) {
+        return reject("different word count");
+    }
+    if (old_normalized.front() != new_normalized.front()) {
+        return reject("different first letter");
+    }
+
+    const std::size_t max_length = std::max(old_normalized.size(), new_normalized.size());
+    const std::size_t allowed_edits = max_length <= 8 ? 1 : (max_length <= 16 ? 2 : 3);
+    std::vector<std::size_t> previous(new_normalized.size() + 1);
+    std::vector<std::size_t> current(new_normalized.size() + 1);
+    for (std::size_t column = 0; column <= new_normalized.size(); ++column) {
+        previous[column] = column;
+    }
+    for (std::size_t row = 1; row <= old_normalized.size(); ++row) {
+        current[0] = row;
+        for (std::size_t column = 1; column <= new_normalized.size(); ++column) {
+            const std::size_t cost =
+                old_normalized[row - 1] == new_normalized[column - 1] ? 0 : 1;
+            current[column] = std::min({previous[column] + 1,
+                                        current[column - 1] + 1,
+                                        previous[column - 1] + cost});
+        }
+        previous.swap(current);
+    }
+    if (previous[new_normalized.size()] > allowed_edits) {
+        return reject("too many edits");
+    }
+    return true;
 }
 
 double string_similarity(const std::string& a, const std::string& b)

@@ -276,6 +276,53 @@ TEST_CASE("UserLearningStore uses stored embeddings during candidate retrieval")
     CHECK(candidates.front().embedding_similarity > 0.0);
 }
 
+TEST_CASE("UserLearningStore persists category label overrides outside the categorization cache")
+{
+    TempDir config_dir;
+    UserLearningStore store(config_dir.path().string());
+    REQUIRE(store.is_open());
+
+    std::string error;
+    REQUIRE(store.upsert_category_label_override("Guides",
+                                                 "General",
+                                                 "Spanish",
+                                                 "Guías",
+                                                 "General",
+                                                 &error));
+    REQUIRE(store.upsert_category_label_override("Books",
+                                                 "Engineering",
+                                                 "Spanish",
+                                                 "Libros",
+                                                 "Ingeniería",
+                                                 &error));
+
+    auto overrides = store.category_label_overrides();
+    REQUIRE(overrides.size() == 2);
+    CHECK(overrides[0].category == "Guides");
+    CHECK(overrides[0].language == "spanish");
+    CHECK(overrides[0].display_category == "Guías");
+    CHECK(overrides[1].display_subcategory == "Ingeniería");
+
+    REQUIRE(store.upsert_category_label_override("Guides",
+                                                 "General",
+                                                 "Spanish",
+                                                 "Guías de usuario",
+                                                 "General",
+                                                 &error));
+    overrides = store.category_label_overrides();
+    REQUIRE(overrides.size() == 2);
+    CHECK(overrides[0].display_category == "Guías de usuario");
+
+    UserLearningStore reloaded(config_dir.path().string());
+    REQUIRE(reloaded.is_open());
+    const auto reloaded_overrides = reloaded.category_label_overrides();
+    REQUIRE(reloaded_overrides.size() == 2);
+    CHECK(reloaded_overrides[0].display_category == "Guías de usuario");
+
+    REQUIRE(store.clear_all(&error));
+    CHECK(store.category_label_overrides().empty());
+}
+
 TEST_CASE("UserLearningStore clears learned behavior while keeping the database reusable")
 {
     TempDir config_dir;

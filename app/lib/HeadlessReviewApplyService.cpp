@@ -4,6 +4,7 @@
 #include "MovableCategorizedFile.hpp"
 #include "ReviewFileNaming.hpp"
 #include "ReviewHistoryStore.hpp"
+#include "ReviewNameValidator.hpp"
 #include "StorageProvider.hpp"
 #include "UndoManager.hpp"
 #include "Utils.hpp"
@@ -57,16 +58,7 @@ std::string strip_history_description_label(std::string value)
 
 bool contains_only_allowed_chars(const std::string& value)
 {
-    static const std::string forbidden = R"(<>:"/\|?*)";
-    for (unsigned char ch : value) {
-        if (std::iscntrl(ch)) {
-            return false;
-        }
-        if (forbidden.find(static_cast<char>(ch)) != std::string::npos) {
-            return false;
-        }
-    }
-    return true;
+    return ReviewNameValidator::contains_only_allowed_chars(value);
 }
 
 bool is_reserved_windows_name(const std::string& value)
@@ -209,6 +201,11 @@ std::string resolve_destination_name(const CategorizedFile& entry, bool apply_su
     return trimmed;
 }
 
+const std::string& destination_root_for(const HeadlessReviewApplyService::Options& options)
+{
+    return options.destination_root.empty() ? options.base_dir : options.destination_root;
+}
+
 std::string display_category(const CategorizedFile& entry)
 {
     return entry.category.empty() ? entry.canonical_category : entry.category;
@@ -271,7 +268,7 @@ HeadlessReviewApplyService::apply(const std::vector<CategorizedFile>& entries,
     std::vector<CategorizedFile> entries_to_apply = entries;
     if (options.apply_suggested_names) {
         ReviewFileNaming::ensure_unique_suggested_names(entries_to_apply,
-                                                        options.base_dir,
+                                                        destination_root_for(options),
                                                         options.use_subcategories,
                                                         options.move_categorized_entries);
     }
@@ -411,7 +408,7 @@ void HeadlessReviewApplyService::apply_entry(const CategorizedFile& entry,
     try {
         MovableCategorizedFile movable(storage_provider_,
                                        entry.file_path,
-                                       options.base_dir,
+                                       destination_root_for(options),
                                        category,
                                        effective_subcategory,
                                        entry.file_name,
@@ -462,7 +459,7 @@ void HeadlessReviewApplyService::apply_entry(const CategorizedFile& entry,
                                                          effective_subcategory,
                                                          options.category_language);
             const std::string source_db_dir = source_directory_for_database(entry, options);
-            std::string destination_db_dir = options.base_dir;
+            std::string destination_db_dir = destination_root_for(options);
             if (options.include_subdirectories) {
                 destination_db_dir =
                     Utils::path_to_utf8(Utils::utf8_to_path(preview.destination).parent_path());

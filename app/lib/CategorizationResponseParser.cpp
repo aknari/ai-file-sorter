@@ -1,5 +1,6 @@
 #include "CategorizationResponseParser.hpp"
 
+#include "ReviewNameValidator.hpp"
 #include "Utils.hpp"
 
 #if __has_include(<jsoncpp/json/json.h>)
@@ -542,16 +543,7 @@ bool split_inline_pair(const std::string& line, std::string& category, std::stri
 
 bool contains_only_allowed_chars(const std::string& value)
 {
-    for (unsigned char ch : value) {
-        if (std::iscntrl(ch)) {
-            return false;
-        }
-        static const std::string forbidden = R"(<>:"/\|?*)";
-        if (forbidden.find(static_cast<char>(ch)) != std::string::npos) {
-            return false;
-        }
-    }
-    return true;
+    return ReviewNameValidator::contains_only_allowed_chars(value);
 }
 
 bool has_leading_or_trailing_space_or_dot(const std::string& value)

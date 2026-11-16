@@ -268,7 +268,7 @@ bool UserLearningStore::initialize_schema(std::string* error)
         );
 
         INSERT OR REPLACE INTO learning_meta(key, value)
-        VALUES('schema_version', '2');
+        VALUES('schema_version', '3');
 
         CREATE TABLE IF NOT EXISTS learned_taxonomy_entries (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -316,6 +316,20 @@ bool UserLearningStore::initialize_schema(std::string* error)
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
             UNIQUE(normalized_alias_category, normalized_alias_subcategory),
             FOREIGN KEY(taxonomy_entry_id) REFERENCES learned_taxonomy_entries(id)
+        );
+
+        CREATE TABLE IF NOT EXISTS category_label_overrides (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            category TEXT NOT NULL,
+            subcategory TEXT NOT NULL DEFAULT '',
+            normalized_category TEXT NOT NULL,
+            normalized_subcategory TEXT NOT NULL,
+            language TEXT NOT NULL,
+            display_category TEXT NOT NULL,
+            display_subcategory TEXT NOT NULL DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(normalized_category, normalized_subcategory, language)
         );
 
         CREATE TABLE IF NOT EXISTS embedding_metadata (
@@ -403,6 +417,96 @@ bool UserLearningStore::record_taxonomy_candidate(const TaxonomyCandidate& candi
                                                    /*preserve_existing_source=*/true,
                                                    error);
     return taxonomy_id > 0 && refresh_taxonomy_embedding(taxonomy_id, error);
+}
+
+bool UserLearningStore::upsert_category_label_override(
+    const std::string& category,
+    const std::string& subcategory,
+    const std::string& language,
+    const std::string& display_category,
+    const std::string& display_subcategory,
+    std::string* error)
+{
+    if (!db_) {
+        if (error) {
+            *error = "User learning database is not open.";
+        }
+        return false;
+    }
+
+    const std::string normalized_category = normalize_label(category);
+    const std::string normalized_subcategory = normalize_label(subcategory);
+    const std::string normalized_language = normalize_label(language);
+    if (normalized_category.empty() || display_category.empty() || normalized_language.empty()) {
+        if (error) {
+            *error = "Category label override requires canonical category, language, and display label.";
+        }
+        return false;
+    }
+
+    const char* sql = R"(
+        INSERT INTO category_label_overrides
+            (category, subcategory, normalized_category, normalized_subcategory,
+             language, display_category, display_subcategory, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(normalized_category, normalized_subcategory, language)
+        DO UPDATE SET
+            category = excluded.category,
+            subcategory = excluded.subcategory,
+            display_category = excluded.display_category,
+            display_subcategory = excluded.display_subcategory,
+            updated_at = CURRENT_TIMESTAMP;
+    )";
+    auto stmt = prepare_statement(db_, sql, error);
+    if (!stmt) {
+        return false;
+    }
+
+    sqlite3_bind_text(stmt.get(), 1, category.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 2, subcategory.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 3, normalized_category.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 4, normalized_subcategory.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 5, normalized_language.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 6, display_category.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt.get(), 7, display_subcategory.c_str(), -1, SQLITE_TRANSIENT);
+
+    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
+        if (error) {
+            *error = sqlite3_errmsg(db_);
+        }
+        return false;
+    }
+    return true;
+}
+
+std::vector<UserLearningStore::CategoryLabelOverride>
+UserLearningStore::category_label_overrides() const
+{
+    std::vector<CategoryLabelOverride> overrides;
+    if (!db_) {
+        return overrides;
+    }
+
+    const char* sql = R"(
+        SELECT category, subcategory, language, display_category, display_subcategory
+        FROM category_label_overrides
+        ORDER BY id;
+    )";
+    auto stmt = prepare_statement(db_, sql, nullptr);
+    if (!stmt) {
+        return overrides;
+    }
+
+    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
+        overrides.push_back(CategoryLabelOverride{
+            sqlite_text(stmt.get(), 0),
+            sqlite_text(stmt.get(), 1),
+            sqlite_text(stmt.get(), 2),
+            sqlite_text(stmt.get(), 3),
+            sqlite_text(stmt.get(), 4)
+        });
+    }
+    return overrides;
 }
 
 bool UserLearningStore::import_taxonomy_candidates(const std::vector<TaxonomyCandidate>& candidates,
@@ -912,6 +1016,7 @@ bool UserLearningStore::clear_all(std::string* error)
     const char* sql = R"(
         BEGIN IMMEDIATE TRANSACTION;
         DELETE FROM taxonomy_embeddings;
+        DELETE FROM category_label_overrides;
         DELETE FROM learned_category_aliases;
         DELETE FROM approved_category_examples;
         DELETE FROM learned_taxonomy_entries;

@@ -176,6 +176,90 @@
         <translation>Editar seleccionados...</translation>
     </message>
     <message>
+        <source>Correct label...</source>
+        <translation>Corregir etiqueta...</translation>
+    </message>
+    <message>
+        <source>Correct a typo or accent in the category label for every file in that category. This does not reclassify files; use Edit selected... for that.</source>
+        <translation>Corrige una errata o una tilde en la etiqueta de categoría para todos los archivos de esa categoría. No reclasifica archivos; usa «Editar seleccionados...» para eso.</translation>
+    </message>
+    <message>
+        <source>Label correction unavailable</source>
+        <translation>Corrección de etiqueta no disponible</translation>
+    </message>
+    <message>
+        <source>Label corrections are only available when the category language is not English.</source>
+        <translation>La corrección de etiquetas solo está disponible cuando el idioma de categorías no es inglés.</translation>
+    </message>
+    <message>
+        <source>The user learning store is not available.</source>
+        <translation>El almacén de aprendizaje del usuario no está disponible.</translation>
+    </message>
+    <message>
+        <source>Select one row</source>
+        <translation>Selecciona una fila</translation>
+    </message>
+    <message>
+        <source>Select exactly one row whose category label you want to correct.</source>
+        <translation>Selecciona exactamente una fila cuya etiqueta de categoría quieras corregir.</translation>
+    </message>
+    <message>
+        <source>No category label</source>
+        <translation>Sin etiqueta de categoría</translation>
+    </message>
+    <message>
+        <source>The selected row has no category label to correct.</source>
+        <translation>La fila seleccionada no tiene una etiqueta de categoría que corregir.</translation>
+    </message>
+    <message>
+        <source>Category not found</source>
+        <translation>Categoría no encontrada</translation>
+    </message>
+    <message>
+        <source>The selected row is not linked to a reusable taxonomy entry.</source>
+        <translation>La fila seleccionada no está vinculada a una entrada de taxonomía reutilizable.</translation>
+    </message>
+    <message>
+        <source>Correct category label</source>
+        <translation>Corregir etiqueta de categoría</translation>
+    </message>
+    <message>
+        <source>This changes the label for every file in &quot;%1 / %2&quot;.&#xa;It does not move or reclassify files. Use &quot;Edit selected...&quot; for that.</source>
+        <translation>Esto cambia la etiqueta de todos los archivos de «%1 / %2».&#xa;No mueve ni reclasifica archivos. Usa «Editar seleccionados...» para eso.</translation>
+    </message>
+    <message>
+        <source>Category:</source>
+        <translation>Categoría:</translation>
+    </message>
+    <message>
+        <source>Subcategory:</source>
+        <translation>Subcategoría:</translation>
+    </message>
+    <message>
+        <source>Not a label correction</source>
+        <translation>No es una corrección de etiqueta</translation>
+    </message>
+    <message>
+        <source>This looks like a different category or subcategory, not a small label correction.&#xa;&#xa;Use &quot;Edit selected...&quot; to reclassify files.</source>
+        <translation>Esto parece una categoría o subcategoría distinta, no una pequeña corrección de etiqueta.&#xa;&#xa;Usa «Editar seleccionados...» para reclasificar archivos.</translation>
+    </message>
+    <message>
+        <source>Apply label correction?</source>
+        <translation>¿Aplicar corrección de etiqueta?</translation>
+    </message>
+    <message>
+        <source>Change the label for all &quot;%1 / %2&quot; entries from &quot;%3 / %4&quot; to &quot;%5 / %6&quot;?</source>
+        <translation>¿Cambiar la etiqueta de todas las entradas «%1 / %2» de «%3 / %4» a «%5 / %6»?</translation>
+    </message>
+    <message>
+        <source>Could not save label correction</source>
+        <translation>No se pudo guardar la corrección de etiqueta</translation>
+    </message>
+    <message>
+        <source>Failed to save the label correction: %1</source>
+        <translation>No se pudo guardar la corrección de etiqueta: %1</translation>
+    </message>
+    <message>
         <location filename="../../lib/CategorizationDialog.cpp" line="2907"/>
         <source>Create subcategory folders</source>
         <translation>Crear carpetas de subcategorías</translation>

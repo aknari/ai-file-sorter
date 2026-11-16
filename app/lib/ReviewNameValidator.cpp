@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdint>
 #include <string_view>
 #include <vector>
 
@@ -15,20 +16,6 @@ std::string to_lower_copy(std::string value)
         return static_cast<char>(std::tolower(c));
     });
     return value;
-}
-
-bool contains_only_allowed_chars(const std::string& value)
-{
-    for (unsigned char ch : value) {
-        if (std::iscntrl(ch)) {
-            return false;
-        }
-        static const std::string forbidden = R"(<>:"/\|?*)";
-        if (forbidden.find(static_cast<char>(ch)) != std::string::npos) {
-            return false;
-        }
-    }
-    return true;
 }
 
 bool has_leading_or_trailing_space_or_dot(const std::string& value)
@@ -70,6 +57,68 @@ bool looks_like_extension_label(const std::string& value)
 }
 
 } // namespace
+
+bool ReviewNameValidator::contains_only_allowed_chars(const std::string& value)
+{
+    static constexpr std::string_view forbidden = R"(<>:\"/\\|?*)";
+
+    for (std::size_t index = 0; index < value.size();) {
+        const unsigned char ch = static_cast<unsigned char>(value[index]);
+
+        if (ch < 0x80) {
+            if (ch < 0x20 || ch == 0x7F) {
+                return false;
+            }
+            if (forbidden.find(static_cast<char>(ch)) != std::string_view::npos) {
+                return false;
+            }
+            ++index;
+            continue;
+        }
+
+        // Decode one UTF-8 sequence so accented letters are checked as characters,
+        // not as individual bytes. Byte 0x81 inside a sequence such as U+0301 must
+        // not be mistaken for a C1 control character.
+        std::uint32_t code_point = 0;
+        std::size_t length = 0;
+        if ((ch & 0xE0) == 0xC0) {
+            code_point = ch & 0x1F;
+            length = 2;
+        } else if ((ch & 0xF0) == 0xE0) {
+            code_point = ch & 0x0F;
+            length = 3;
+        } else if ((ch & 0xF8) == 0xF0) {
+            code_point = ch & 0x07;
+            length = 4;
+        } else {
+            return false;
+        }
+
+        if (index + length > value.size()) {
+            return false;
+        }
+        for (std::size_t offset = 1; offset < length; ++offset) {
+            const unsigned char continuation =
+                static_cast<unsigned char>(value[index + offset]);
+            if ((continuation & 0xC0) != 0x80) {
+                return false;
+            }
+            code_point = (code_point << 6) | (continuation & 0x3F);
+        }
+
+        const bool overlong = (length == 2 && code_point < 0x80) ||
+                              (length == 3 && code_point < 0x800) ||
+                              (length == 4 && code_point < 0x10000);
+        if (overlong || code_point > 0x10FFFF ||
+            (code_point >= 0xD800 && code_point <= 0xDFFF) ||
+            code_point < 0x20 || (code_point >= 0x7F && code_point <= 0x9F)) {
+            return false;
+        }
+
+        index += length;
+    }
+    return true;
+}
 
 std::string ReviewNameValidator::trim_copy(const std::string& value)
 {

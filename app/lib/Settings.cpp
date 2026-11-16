@@ -424,7 +424,8 @@ Settings::Settings()
       use_consistency_hints(false),
       use_whitelist(false),
       default_sort_folder(""),
-      sort_folder("")
+      sort_folder(""),
+      destination_folder("")
 {
     std::string AppName = "AIFileSorter";
     config_path = define_config_path();
@@ -578,6 +579,7 @@ void Settings::load_basic_settings(const std::function<bool(const char*, bool)>&
         categorize_directories = false;
     }
     sort_folder = config.getValue("Settings", "SortFolder", default_sort_folder.empty() ? std::string("/") : default_sort_folder);
+    destination_folder = config.getValue("Settings", "DestinationFolder", "");
     show_file_explorer = load_bool("ShowFileExplorer", true);
     recent_network_locations = parse_multiline_list(
         config.getValue("Settings", "RecentNetworkLocations", ""));
@@ -731,6 +733,10 @@ void Settings::save_core_settings()
     set_bool_setting(config, settings_section, "ProcessDocumentsOnly", process_documents_only);
     set_bool_setting(config, settings_section, "AddDocumentDateToCategory", add_document_date_to_category);
     config.setValue(settings_section, "SortFolder", this->sort_folder);
+    set_optional_setting(config,
+                         settings_section,
+                         "DestinationFolder",
+                         destination_folder);
 
     set_optional_setting(config, settings_section, "SkippedVersion", skipped_version);
     set_optional_setting(config, settings_section, "WhatsNewVersionShown", whats_new_version_shown);
@@ -868,6 +874,7 @@ bool Settings::load()
 {
     if (!config.load(config_path)) {
         sort_folder = default_sort_folder.empty() ? std::string("/") : default_sort_folder;
+        destination_folder.clear();
         set_llm_storage_dir("");
         // Keep language defaults derived from system locale when no config is found.
         return false;
@@ -1394,6 +1401,16 @@ std::string Settings::get_sort_folder() const
 void Settings::set_sort_folder(const std::string &path)
 {
     this->sort_folder = path;
+}
+
+std::string Settings::get_destination_folder() const
+{
+    return destination_folder;
+}
+
+void Settings::set_destination_folder(const std::string& path)
+{
+    this->destination_folder = path;
 }
 
 bool Settings::get_consistency_pass_enabled() const

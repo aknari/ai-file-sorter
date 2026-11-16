@@ -416,6 +416,15 @@ void MainAppUiBuilder::build_central_panel(MainApp& app) {
     path_layout->addWidget(app.exclusion_filter_button);
     main_layout->addLayout(path_layout);
 
+    auto* destination_layout = new QHBoxLayout();
+    app.destination_label = new QLabel(central);
+    app.destination_entry = new QLineEdit(central);
+    app.destination_browse_button = new QPushButton(central);
+    destination_layout->addWidget(app.destination_label);
+    destination_layout->addWidget(app.destination_entry, 1);
+    destination_layout->addWidget(app.destination_browse_button);
+    main_layout->addLayout(destination_layout);
+
     auto* options_layout = new QHBoxLayout();
     app.use_subcategories_checkbox = new QCheckBox(central);
     app.categorize_files_checkbox = new QCheckBox(central);
@@ -628,6 +637,9 @@ UiTranslator::Dependencies MainAppUiBuilder::build_translator_dependencies(MainA
         .primary = UiTranslator::PrimaryControls{
             app.path_label,
             app.browse_button,
+            app.destination_label,
+            app.destination_entry,
+            app.destination_browse_button,
             app.analyze_button,
             app.use_subcategories_checkbox,
             app.categorization_style_heading,

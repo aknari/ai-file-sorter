@@ -1064,6 +1064,123 @@ endif()
 aifs_stage_windows_qt_plugins(aifilesorter)
 aifs_stage_windows_webp_runtime(aifilesorter)
 
+# Headless engine: same analysis core, but linked against QtCore/QtNetwork only so
+# the bundle does not need QtWidgets, QtGui, or their platform plugins.
+option(AI_FILE_SORTER_BUILD_HEADLESS
+    "Build a headless engine that links QtCore/QtNetwork only (no QtWidgets/QtGui)." OFF)
+
+if(AI_FILE_SORTER_BUILD_HEADLESS)
+    set(AIFS_HEADLESS_EXCLUDED_SOURCES
+        AppIconResources.cpp
+        AppTestRunner.cpp
+        AppTheme.cpp
+        BulkEditDialog.cpp
+        CacheMaintenanceDialog.cpp
+        CategorizationDialog.cpp
+        CategorizationProgressDialog.cpp
+        CustomApiDialog.cpp
+        CustomLLMDialog.cpp
+        DialogUtils.cpp
+        DryRunPreviewDialog.cpp
+        ExclusionFilterDialog.cpp
+        FilePreviewService.cpp
+        LLMSelectionDialog.cpp
+        MainApp.cpp
+        MainAppEditActions.cpp
+        MainAppHelpActions.cpp
+        MainAppProgressController.cpp
+        MainAppTestAccess.cpp
+        MainAppUiBuilder.cpp
+        MainWindowStateBinder.cpp
+        MenuMnemonicController.cpp
+        ReviewHistoryDialog.cpp
+        SingleInstanceCoordinator.cpp
+        StoragePluginDialog.cpp
+        SuitabilityBenchmarkDialog.cpp
+        TranslationManager.cpp
+        UiTranslator.cpp
+        Updater.cpp
+        WhitelistManagerDialog.cpp
+    )
+
+    set(AIFS_HEADLESS_SOURCES "${CMAKE_CURRENT_SOURCE_DIR}/main_headless.cpp")
+    foreach(_aifs_headless_source IN LISTS APP_LIB_SOURCES)
+        get_filename_component(_aifs_headless_name "${_aifs_headless_source}" NAME)
+        list(FIND AIFS_HEADLESS_EXCLUDED_SOURCES "${_aifs_headless_name}" _aifs_headless_excluded)
+        if(_aifs_headless_excluded EQUAL -1)
+            list(APPEND AIFS_HEADLESS_SOURCES "${_aifs_headless_source}")
+        endif()
+    endforeach()
+
+    add_executable(aifilesorter-headless ${AIFS_HEADLESS_SOURCES})
+    aifs_apply_update_mode(aifilesorter-headless)
+    target_include_directories(aifilesorter-headless PRIVATE
+        "${CMAKE_CURRENT_SOURCE_DIR}/include"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/llama"
+        "${CMAKE_CURRENT_SOURCE_DIR}/include/external/llama.cpp/tools/mtmd"
+        ${DOC_DEPS_INCLUDE_DIRS}
+    )
+    # The analysis core uses no QtNetwork APIs; remote providers go through libcurl.
+    target_link_libraries(aifilesorter-headless PRIVATE
+        Qt6::Core
+        CURL::libcurl
+        OpenSSL::SSL OpenSSL::Crypto
+        ${AIFS_SQLITE_TARGET}
+        JsonCpp::JsonCpp
+        fmt::fmt
+        spdlog::spdlog
+        Intl::Intl
+        llama
+        ${MEDIAINFO_DEPS_LIBS}
+        ${DOC_DEPS_LIBS}
+    )
+    target_compile_definitions(aifilesorter-headless PRIVATE
+        AIFS_STORAGE_PLUGIN_CATALOG_URL="${AI_FILE_SORTER_STORAGE_PLUGIN_CATALOG_URL}"
+    )
+    # The embedded .env carries the built-in model paths and download metadata
+    # that the desktop build reads from its Qt resource bundle.
+    qt_add_resources(aifilesorter-headless "headless_env_resources"
+        PREFIX "/dev/hfstudio/AIFileSorter"
+        FILES
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/.env"
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/certs/cacert.pem"
+    )
+    if(APPLE)
+        # ImageIO/CoreGraphics decode images for visual analysis without QtGui.
+        target_link_libraries(aifilesorter-headless PRIVATE
+            "-framework ImageIO"
+            "-framework CoreGraphics"
+            "-framework CoreFoundation"
+        )
+    endif()
+    if(WIN32)
+        target_link_libraries(aifilesorter-headless PRIVATE ggml ggml_base ggml_cpu)
+        if(TARGET mtmd)
+            target_link_libraries(aifilesorter-headless PRIVATE mtmd)
+        endif()
+    else()
+        target_link_libraries(aifilesorter-headless PRIVATE mtmd)
+        target_compile_definitions(aifilesorter-headless PRIVATE AI_FILE_SORTER_HAS_MTMD)
+        if(HAVE_MTMD_HELPER_SET_PROGRESS_CALLBACK)
+            target_compile_definitions(aifilesorter-headless PRIVATE AI_FILE_SORTER_MTMD_PROGRESS_CALLBACK)
+        endif()
+        if(HAVE_MTMD_HELPER_LOG_SET)
+            target_compile_definitions(aifilesorter-headless PRIVATE AI_FILE_SORTER_MTMD_LOG_CALLBACK)
+        endif()
+    endif()
+    if(_aifs_pdfium_ready AND NOT WIN32)
+        if(APPLE)
+            set(_aifs_headless_rpath "@loader_path")
+        else()
+            set(_aifs_headless_rpath "$ORIGIN")
+        endif()
+        set_target_properties(aifilesorter-headless PROPERTIES
+            BUILD_RPATH "${_aifs_headless_rpath}"
+            INSTALL_RPATH "${_aifs_headless_rpath}"
+        )
+    endif()
+endif()
+
 set(STARTER_TARGET "")
 if(WIN32 AND _aifs_windows_enable_starter)
     set(STARTER_TARGET StartAiFileSorter)
@@ -1576,6 +1693,7 @@ if(AI_FILE_SORTER_BUILD_TESTS)
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_app_test_runner.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_user_learning_store.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_database_manager_rename_only.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_taxonomy_normalization.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_cache_interactions.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_image_rename_metadata_service.cpp"
         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_filename_localization_service.cpp"

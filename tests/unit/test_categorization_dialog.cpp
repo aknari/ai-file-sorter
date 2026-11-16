@@ -331,6 +331,78 @@ TEST_CASE("CategorizationDialog undo restores moved files") {
     REQUIRE_FALSE(dialog.test_undo_enabled());
 }
 
+TEST_CASE("CategorizationDialog moves into a separate destination and versions collisions") {
+    EnvVarGuard platform_guard("QT_QPA_PLATFORM", preferred_qt_test_platform());
+    QtAppContext qt_context;
+
+    TempDir source_dir;
+    TempDir destination_dir;
+    const std::filesystem::path source = source_dir.path() / "report.pdf";
+    const std::filesystem::path existing = destination_dir.path() / "Docs" / "Reports" / "report.pdf";
+    std::filesystem::create_directories(existing.parent_path());
+    std::ofstream(source).put('n');
+    std::ofstream(existing).put('o');
+
+    CategorizedFile file;
+    file.file_path = source_dir.path().string();
+    file.file_name = "report.pdf";
+    file.type = FileType::File;
+    file.category = "Docs";
+    file.subcategory = "Reports";
+
+    TempDir undo_dir;
+    CategorizationDialog dialog(nullptr, true, undo_dir.path().string());
+    dialog.test_set_entries({file}, destination_dir.path().string());
+    dialog.test_trigger_confirm();
+
+    REQUIRE_FALSE(std::filesystem::exists(source));
+    REQUIRE(std::filesystem::exists(existing));
+    const std::filesystem::path versioned =
+        destination_dir.path() / "Docs" / "Reports" / "report (1).pdf";
+    REQUIRE(std::filesystem::exists(versioned));
+
+    std::ifstream existing_stream(existing);
+    const std::string existing_contents((std::istreambuf_iterator<char>(existing_stream)),
+                                        std::istreambuf_iterator<char>());
+    CHECK(existing_contents == "o");
+
+    dialog.test_trigger_undo();
+    REQUIRE(std::filesystem::exists(source));
+    CHECK_FALSE(std::filesystem::exists(versioned));
+    REQUIRE(std::filesystem::exists(existing));
+}
+
+TEST_CASE("CategorizationDialog keeps a separate destination root after undo") {
+    EnvVarGuard platform_guard("QT_QPA_PLATFORM", preferred_qt_test_platform());
+    QtAppContext qt_context;
+
+    TempDir source_dir;
+    TempDir destination_parent;
+    const std::filesystem::path destination_root = destination_parent.path() / "sorted";
+    const std::filesystem::path source = source_dir.path() / "report.pdf";
+    std::ofstream(source).put('x');
+
+    CategorizedFile file;
+    file.file_path = source_dir.path().string();
+    file.file_name = "report.pdf";
+    file.type = FileType::File;
+    file.category = "Docs";
+    file.subcategory = "Reports";
+
+    TempDir undo_dir;
+    CategorizationDialog dialog(nullptr, true, undo_dir.path().string());
+    dialog.test_set_entries({file}, destination_root.string());
+    dialog.test_trigger_confirm();
+
+    REQUIRE_FALSE(std::filesystem::exists(source));
+    REQUIRE(std::filesystem::exists(destination_root / "Docs" / "Reports" / "report.pdf"));
+
+    dialog.test_trigger_undo();
+
+    REQUIRE(std::filesystem::exists(source));
+    CHECK(std::filesystem::exists(destination_root));
+}
+
 TEST_CASE("CategorizationDialog records applied review history with descriptions")
 {
     EnvVarGuard platform_guard("QT_QPA_PLATFORM", preferred_qt_test_platform());
@@ -636,6 +708,43 @@ TEST_CASE("UndoManager restores saved plans through the active storage provider"
     CHECK(undo_result.skipped == 0);
     REQUIRE(std::filesystem::exists(source));
     REQUIRE_FALSE(std::filesystem::exists(destination));
+}
+
+TEST_CASE("UndoManager preserves the plan base directory") {
+    TempDir undo_dir;
+    TempDir data_parent;
+
+    StorageProviderRegistry registry;
+    auto local_provider = std::make_shared<LocalFsProvider>();
+    registry.register_builtin(local_provider);
+
+    const std::filesystem::path base_dir = data_parent.path() / "sorted";
+    const std::filesystem::path source = data_parent.path() / "original.txt";
+    const std::filesystem::path destination = base_dir / "Moved" / "original.txt";
+    std::ofstream(source).put('x');
+
+    const auto move_result = local_provider->move_entry(source.string(), destination.string());
+    REQUIRE(move_result.success);
+
+    UndoManager writer(undo_dir.path().string());
+    REQUIRE(writer.save_plan(base_dir.string(),
+                             local_provider->id(),
+                             {UndoManager::Entry{
+                                 source.string(),
+                                 destination.string(),
+                                 move_result.metadata.size_bytes,
+                                 move_result.metadata.mtime}},
+                             nullptr));
+
+    UndoManager reader(undo_dir.path().string(), &registry);
+    const auto plan_path = reader.latest_plan_path();
+    REQUIRE(plan_path.has_value());
+
+    const auto undo_result = reader.undo_plan(*plan_path);
+    CHECK(undo_result.restored == 1);
+    CHECK(undo_result.skipped == 0);
+    REQUIRE(std::filesystem::exists(source));
+    CHECK(std::filesystem::exists(base_dir));
 }
 
 TEST_CASE("UndoManager relaxes timestamp validation for cloud providers") {

@@ -11,6 +11,8 @@
 #include <memory>
 #include <optional>
 #include <tuple>
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <spdlog/logger.h>
 
@@ -99,7 +101,8 @@ public:
     void set_file_preview_service(std::unique_ptr<IFilePreviewService> preview_service);
 
 #ifdef AI_FILE_SORTER_TEST_BUILD
-    void test_set_entries(const std::vector<CategorizedFile>& files);
+    void test_set_entries(const std::vector<CategorizedFile>& files,
+                          const std::string& base_dir_override = std::string());
     void test_trigger_confirm();
     bool test_trigger_preview(int row);
     void test_trigger_undo();
@@ -269,6 +272,12 @@ private:
                               const std::string& stable_identity,
                               const std::string& revision_token,
                               long long history_id = 0);
+    struct MoveCollisionState {
+        std::unordered_set<std::string> used_names;
+        std::unordered_map<std::string, int> next_index;
+    };
+    using MoveCollisionMap = std::unordered_map<std::string, MoveCollisionState>;
+
     void handle_selected_row(int row_index,
                              const std::string& file_name,
                              const std::string& rename_candidate,
@@ -276,6 +285,7 @@ private:
                              const std::string& subcategory,
                              const std::string& source_dir,
                              const std::string& base_dir,
+                             MoveCollisionMap& collisions,
                              std::vector<std::string>& files_not_moved,
                              FileType file_type,
                              bool rename_only,
@@ -326,6 +336,16 @@ private:
     std::optional<PreviewRecord> build_preview_record_for_row(int row, std::string* debug_reason = nullptr) const;
     std::string resolve_destination_name(const std::string& original_name,
                                          const std::string& rename_candidate) const;
+    /**
+     * @brief Resolves a collision-free destination name for the current run.
+     * @param desired_name Preferred filename.
+     * @param target_dir Destination directory.
+     * @param collisions Per-directory names already reserved by this run.
+     * @return Unused filename, numbered with ` (1)`, ` (2)`, ... when needed.
+     */
+    std::string unique_destination_name(const std::string& desired_name,
+                                        const std::string& target_dir,
+                                        MoveCollisionMap& collisions) const;
     /**
      * @brief Returns whether the row's suggested filename should be applied.
      * @param row Row index in the model.
@@ -411,6 +431,14 @@ private:
      * @brief Opens a dialog to bulk edit categories for highlighted rows.
      */
     void on_bulk_edit_clicked();
+    /**
+     * @brief Opens a dialog to correct the display label of the selected taxonomy entry.
+     */
+    void on_correct_label_clicked();
+    /**
+     * @brief Enables the label-correction action when exactly one valid row is selected.
+     */
+    void update_correct_label_button_state();
 
     DatabaseManager* db_manager;
     UserLearningStore* learning_store_{nullptr};
@@ -441,6 +469,7 @@ private:
     QPushButton* select_highlighted_button{nullptr};
     QPushButton* keep_original_button{nullptr};
     QPushButton* bulk_edit_button{nullptr};
+    QPushButton* correct_label_button{nullptr};
     QCheckBox* show_subcategories_checkbox{nullptr};
     QCheckBox* dry_run_checkbox{nullptr};
     QCheckBox* rename_images_only_checkbox{nullptr};

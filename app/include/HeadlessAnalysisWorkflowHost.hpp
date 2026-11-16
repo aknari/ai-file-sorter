@@ -114,6 +114,12 @@ public:
     std::string folder_path() const;
 
     /**
+     * @brief Return the configured destination root for categorized moves.
+     * @return UTF-8 destination folder, or an empty string to organize in place.
+     */
+    std::string destination_root() const;
+
+    /**
      * @brief Return whether subcategory folders should be created.
      * @return True when subcategory folders are enabled.
      */

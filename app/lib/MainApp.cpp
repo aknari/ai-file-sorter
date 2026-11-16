@@ -631,6 +631,7 @@ MainApp::MainApp(Settings& settings,
     progress_controller_.set_show_vision_diagnostics(is_development_mode() || is_test_mode());
     TranslationManager::instance().initialize_for_app(qApp, settings.get_language());
     initialize_whitelists();
+    load_category_label_overrides();
 
     using_local_llm = !is_remote_choice(settings.get_llm_choice());
 
@@ -980,6 +981,19 @@ void MainApp::connect_signals()
             on_directory_selected(directory);
         }
     });
+    connect(destination_browse_button, &QPushButton::clicked, this, [this]() {
+        QString start_directory = destination_entry ? destination_entry->text().trimmed() : QString();
+        if (start_directory.isEmpty()) {
+            start_directory = path_entry ? path_entry->text() : QString();
+        }
+        const QString directory = QFileDialog::getExistingDirectory(
+            this,
+            tr("Select Destination Directory"),
+            start_directory);
+        if (!directory.isEmpty() && destination_entry) {
+            destination_entry->setText(directory);
+        }
+    });
     connect(exclusion_filter_button,
             &QPushButton::clicked,
             this,
@@ -1188,7 +1202,16 @@ void MainApp::apply_accessibility_metadata()
         apply_named_control(path_entry, path_label->text(), path_entry->toolTip());
     }
 
+    if (destination_label && destination_entry) {
+        destination_label->setBuddy(destination_entry);
+        apply_named_control(destination_entry,
+                            destination_label->text(),
+                            destination_entry->toolTip());
+    }
+
     apply_named_control(browse_button, browse_button ? browse_button->text() : QString());
+    apply_named_control(destination_browse_button,
+                        destination_browse_button ? destination_browse_button->text() : QString());
     apply_named_control(exclusion_filter_button,
                         exclusion_filter_button ? exclusion_filter_button->text() : QString(),
                         exclusion_filter_button ? exclusion_filter_button->toolTip() : QString());
@@ -1756,6 +1779,26 @@ void MainApp::initialize_whitelists()
 {
     whitelist_store.initialize_from_settings(settings);
     sync_whitelists_to_learning_store();
+}
+
+void MainApp::load_category_label_overrides()
+{
+    if (!user_learning_store_.is_open()) {
+        return;
+    }
+
+    for (const auto& entry : user_learning_store_.category_label_overrides()) {
+        const CategoryLanguage language =
+            categoryLanguageFromString(QString::fromStdString(entry.language));
+        if (language == CategoryLanguage::English) {
+            continue;
+        }
+        db_manager.set_user_label_override(entry.category,
+                                           entry.subcategory,
+                                           language,
+                                           entry.display_category,
+                                           entry.display_subcategory);
+    }
 }
 
 void MainApp::sync_whitelists_to_learning_store()
@@ -3358,6 +3401,7 @@ void MainApp::reset_learned_behavior()
         return;
     }
 
+    db_manager.clear_user_label_overrides();
     sync_whitelists_to_learning_store();
     QMessageBox::information(this,
                              tr("Reset learned behavior?"),
@@ -3594,7 +3638,7 @@ void MainApp::show_results_dialog(const std::vector<CategorizedFile>& results)
                                                                        &user_learning_store_,
                                                                        &review_history_store_);
         categorization_dialog->show_results(results,
-                                            get_folder_path(),
+                                            get_destination_folder(),
                                             settings.get_include_subdirectories(),
                                             settings.get_offer_rename_images(),
                                             settings.get_offer_rename_documents(),
@@ -3639,6 +3683,18 @@ std::string MainApp::get_folder_path() const
     const QByteArray bytes = path_entry->text().toUtf8();
     return normalize_directory_path(
         std::string(bytes.constData(), static_cast<std::size_t>(bytes.size())));
+}
+
+std::string MainApp::get_destination_folder() const
+{
+    if (!destination_entry) {
+        return get_folder_path();
+    }
+
+    const QByteArray bytes = destination_entry->text().trimmed().toUtf8();
+    const std::string configured = normalize_directory_path(
+        std::string(bytes.constData(), static_cast<std::size_t>(bytes.size())));
+    return configured.empty() ? get_folder_path() : configured;
 }
 
 

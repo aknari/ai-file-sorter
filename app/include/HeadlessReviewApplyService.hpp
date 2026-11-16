@@ -27,6 +27,8 @@ public:
     struct Options {
         /** @brief Folder selected by the caller and used as the destination root. */
         std::string base_dir;
+        /** @brief Optional destination root for categorized moves. Empty keeps files in base_dir. */
+        std::string destination_root;
         /** @brief Directory used to save undo plans for successful moves. */
         std::string undo_dir;
         /** @brief Whether subcategory folders should be created. */

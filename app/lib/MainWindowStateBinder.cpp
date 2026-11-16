@@ -356,6 +356,10 @@ void MainWindowStateBinder::restore_sort_folder_state()
     }
 
     app_.path_entry->setText(effective_folder);
+    if (app_.destination_entry) {
+        app_.destination_entry->setText(
+            QString::fromStdString(app_.settings.get_destination_folder()));
+    }
 
     if (!effective_folder.isEmpty() && QDir(effective_folder).exists()) {
         app_.statusBar()->showMessage(app_.tr("Loaded folder %1").arg(effective_folder), 3000);
@@ -460,6 +464,12 @@ void MainWindowStateBinder::sync_ui_to_settings()
     const QByteArray folder_bytes = app_.path_entry->text().toUtf8();
     app_.settings.set_sort_folder(
         std::string(folder_bytes.constData(), static_cast<std::size_t>(folder_bytes.size())));
+    if (app_.destination_entry) {
+        const QByteArray destination_bytes = app_.destination_entry->text().trimmed().toUtf8();
+        app_.settings.set_destination_folder(std::string(
+            destination_bytes.constData(),
+            static_cast<std::size_t>(destination_bytes.size())));
+    }
     if (app_.file_explorer_menu_action) {
         app_.settings.set_show_file_explorer(app_.file_explorer_menu_action->isChecked());
     }

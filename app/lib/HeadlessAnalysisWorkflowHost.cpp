@@ -93,6 +93,20 @@ HeadlessAnalysisWorkflowHost::HeadlessAnalysisWorkflowHost(Options options)
     results_coordinator_ = std::make_unique<ResultsCoordinator>(storage_provider_);
     using_local_llm_ = !is_remote_choice(settings_.get_llm_choice());
     initialize_whitelists();
+    if (user_learning_store_->is_open()) {
+        for (const auto& entry : user_learning_store_->category_label_overrides()) {
+            const CategoryLanguage language =
+                categoryLanguageFromString(QString::fromStdString(entry.language));
+            if (language == CategoryLanguage::English) {
+                continue;
+            }
+            db_manager_->set_user_label_override(entry.category,
+                                                 entry.subcategory,
+                                                 language,
+                                                 entry.display_category,
+                                                 entry.display_subcategory);
+        }
+    }
 }
 
 HeadlessAnalysisWorkflowHost::~HeadlessAnalysisWorkflowHost() = default;
@@ -191,6 +205,11 @@ CategoryLanguage HeadlessAnalysisWorkflowHost::category_language() const
 bool HeadlessAnalysisWorkflowHost::headless_review_before_apply() const
 {
     return settings_.get_headless_review_before_apply();
+}
+
+std::string HeadlessAnalysisWorkflowHost::destination_root() const
+{
+    return settings_.get_destination_folder();
 }
 
 std::string HeadlessAnalysisWorkflowHost::undo_dir() const

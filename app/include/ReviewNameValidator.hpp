@@ -20,6 +20,17 @@ std::string trim_copy(const std::string& value);
 bool is_missing_category_label(const std::string& value);
 
 /**
+ * @brief Return whether text contains only characters allowed in filenames and folder labels.
+ *
+ * The check is UTF-8 aware: non-ASCII letters and combining marks are allowed, while
+ * control characters and filesystem-reserved ASCII punctuation are rejected.
+ *
+ * @param value Filename or folder label to inspect.
+ * @return True when the text can safely be used as a path component.
+ */
+bool contains_only_allowed_chars(const std::string& value);
+
+/**
  * @brief Remove UI prefixes from stored analysis descriptions.
  * @param value Description text from the review row.
  * @return Description without known image/document prefixes.

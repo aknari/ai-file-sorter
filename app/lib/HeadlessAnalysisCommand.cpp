@@ -2,6 +2,7 @@
 
 #include "AnalysisRunResult.hpp"
 #include "DatabaseManager.hpp"
+#include "DatabaseTaxonomyNormalizer.hpp"
 #include "HeadlessAnalysisWorkflowHost.hpp"
 #include "HeadlessReviewApplyService.hpp"
 #include "HeadlessSettingsOverridesJson.hpp"
@@ -10,6 +11,7 @@
 #include "Logger.hpp"
 #include "ReviewHistoryStore.hpp"
 #include "Settings.hpp"
+#include "UserLearningStore.hpp"
 #include "Utils.hpp"
 
 #include <QCoreApplication>
@@ -24,7 +26,9 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -154,7 +158,7 @@ std::string generate_job_id()
 bool is_headless_request_flag(const std::string& argument)
 {
     return argument == "--headless" || argument == "--headless-apply" ||
-           argument == "--headless-help";
+           argument == "--headless-correct-label" || argument == "--headless-help";
 }
 
 bool argument_has_prefix(const std::string& argument, const std::string& prefix)
@@ -179,7 +183,13 @@ bool is_value_argument(const std::string& argument)
            argument == "--job-id" || argument == "--headless-job-id" ||
            argument == "--review-file" || argument == "--headless-review-file" ||
            argument == "--settings-overrides-file" ||
-           argument == "--headless-settings-overrides-file";
+           argument == "--headless-settings-overrides-file" ||
+           argument == "--taxonomy-id" || argument == "--headless-taxonomy-id" ||
+           argument == "--category-language" || argument == "--headless-category-language" ||
+           argument == "--current-category" || argument == "--headless-current-category" ||
+           argument == "--current-subcategory" || argument == "--headless-current-subcategory" ||
+           argument == "--category-label" || argument == "--headless-category-label" ||
+           argument == "--subcategory-label" || argument == "--headless-subcategory-label";
 }
 
 bool parse_value(int argc,
@@ -214,6 +224,25 @@ bool parse_value(int argc,
     *value = argv[index];
     result->consumed_arguments[static_cast<std::size_t>(index)] = true;
     return true;
+}
+
+bool parse_positive_int(const std::string& value, int* result)
+{
+    if (!result || value.empty()) {
+        return false;
+    }
+    try {
+        std::size_t consumed = 0;
+        const long long parsed = std::stoll(value, &consumed);
+        if (consumed != value.size() || parsed <= 0 ||
+            parsed > static_cast<long long>(std::numeric_limits<int>::max())) {
+            return false;
+        }
+        *result = static_cast<int>(parsed);
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
 }
 
 bool read_settings_overrides_file(const std::filesystem::path& path,
@@ -291,10 +320,31 @@ std::optional<std::string> validate_review_apply_options(const HeadlessAnalysisC
     return std::nullopt;
 }
 
+std::optional<std::string>
+validate_label_correction_options(const HeadlessAnalysisCommand::Options& options)
+{
+    if (options.taxonomy_id <= 0) {
+        return "A positive --taxonomy-id value is required for --headless-correct-label.";
+    }
+    if (options.category_language == CategoryLanguage::English) {
+        return "Label correction requires a non-English --category-language.";
+    }
+    if (options.current_category.empty() || options.current_subcategory.empty()) {
+        return "The current category and subcategory labels are required.";
+    }
+    if (options.corrected_category.empty() || options.corrected_subcategory.empty()) {
+        return "The corrected category and subcategory labels are required.";
+    }
+    return std::nullopt;
+}
+
 std::optional<std::string> validate_options(const HeadlessAnalysisCommand::Options& options)
 {
     if (options.request_mode == HeadlessAnalysisCommand::RequestMode::ApplyReview) {
         return validate_review_apply_options(options);
+    }
+    if (options.request_mode == HeadlessAnalysisCommand::RequestMode::CorrectLabel) {
+        return validate_label_correction_options(options);
     }
     return validate_analysis_options(options);
 }
@@ -364,6 +414,7 @@ HeadlessReviewApplyService::Options preview_apply_options(
     apply_options.apply_suggested_names = operation_applies_suggested_names(options.operation);
     apply_options.move_categorized_entries = operation_moves_categorized_entries(options.operation);
     apply_options.category_language = host.category_language();
+    apply_options.destination_root = host.destination_root();
     apply_options.apply_changes = false;
     return apply_options;
 }
@@ -646,6 +697,123 @@ int run_review_apply_plan(const HeadlessAnalysisCommand::Options& options,
                                    err);
 }
 
+int run_label_correction(const HeadlessAnalysisCommand::Options& options,
+                         const AnalysisRuntimeLock::Metadata& metadata,
+                         std::ostream& out,
+                         std::ostream& err)
+{
+    Settings settings;
+    settings.load();
+    DatabaseManager db_manager(settings.get_config_dir());
+    const auto taxonomy = db_manager.get_taxonomy_entry(options.taxonomy_id);
+    if (!taxonomy) {
+        emit_status(options,
+                    "failed",
+                    "Could not correct the category label.",
+                    "The taxonomy id does not exist.",
+                    metadata,
+                    out,
+                    err);
+        return HeadlessAnalysisCommand::Failure;
+    }
+
+    std::string reason;
+    if (!DatabaseTaxonomyNormalizer::is_minor_label_correction(options.current_category,
+                                                               options.corrected_category,
+                                                               &reason)) {
+        emit_status(options,
+                    "failed",
+                    "Not a label correction.",
+                    "Category: " + reason + ".",
+                    metadata,
+                    out,
+                    err);
+        return HeadlessAnalysisCommand::Usage;
+    }
+    if (!DatabaseTaxonomyNormalizer::is_minor_label_correction(options.current_subcategory,
+                                                               options.corrected_subcategory,
+                                                               &reason)) {
+        emit_status(options,
+                    "failed",
+                    "Not a label correction.",
+                    "Subcategory: " + reason + ".",
+                    metadata,
+                    out,
+                    err);
+        return HeadlessAnalysisCommand::Usage;
+    }
+
+    if (options.current_category == options.corrected_category &&
+        options.current_subcategory == options.corrected_subcategory) {
+        emit_status(options,
+                    "completed",
+                    "No category label change was needed.",
+                    {},
+                    metadata,
+                    out,
+                    err);
+        return HeadlessAnalysisCommand::Success;
+    }
+
+    UserLearningStore learning_store(settings.get_config_dir());
+    if (!learning_store.is_open()) {
+        emit_status(options,
+                    "failed",
+                    "Could not correct the category label.",
+                    "The user learning store is not available.",
+                    metadata,
+                    out,
+                    err);
+        return HeadlessAnalysisCommand::Failure;
+    }
+
+    std::string error;
+    if (!learning_store.upsert_category_label_override(
+            taxonomy->category,
+            taxonomy->subcategory,
+            categoryLanguageDisplay(options.category_language),
+            options.corrected_category,
+            options.corrected_subcategory,
+            &error)) {
+        emit_status(options,
+                    "failed",
+                    "Could not save the category label correction.",
+                    error,
+                    metadata,
+                    out,
+                    err);
+        return HeadlessAnalysisCommand::Failure;
+    }
+
+    db_manager.set_user_label_override(taxonomy->category,
+                                       taxonomy->subcategory,
+                                       options.category_language,
+                                       options.corrected_category,
+                                       options.corrected_subcategory);
+
+    QJsonObject payload;
+    payload.insert(QStringLiteral("taxonomyId"), options.taxonomy_id);
+    payload.insert(QStringLiteral("category"), QString::fromStdString(options.corrected_category));
+    payload.insert(QStringLiteral("subcategory"),
+                   QString::fromStdString(options.corrected_subcategory));
+    payload.insert(QStringLiteral("canonicalCategory"),
+                   QString::fromStdString(taxonomy->category));
+    payload.insert(QStringLiteral("canonicalSubcategory"),
+                   QString::fromStdString(taxonomy->subcategory));
+    payload.insert(QStringLiteral("categoryLanguage"),
+                   categoryLanguageToString(options.category_language));
+
+    emit_status(options,
+                "completed",
+                "Category label corrected for every entry in this taxonomy.",
+                {},
+                metadata,
+                out,
+                err,
+                &payload);
+    return HeadlessAnalysisCommand::Success;
+}
+
 } // namespace
 
 HeadlessAnalysisCommand::ParseResult HeadlessAnalysisCommand::parse(int argc, char** argv)
@@ -682,6 +850,11 @@ HeadlessAnalysisCommand::ParseResult HeadlessAnalysisCommand::parse(int argc, ch
         }
         if (argument == "--headless-apply") {
             result.options.request_mode = RequestMode::ApplyReview;
+            result.consumed_arguments[static_cast<std::size_t>(i)] = true;
+            continue;
+        }
+        if (argument == "--headless-correct-label") {
+            result.options.request_mode = RequestMode::CorrectLabel;
             result.consumed_arguments[static_cast<std::size_t>(i)] = true;
             continue;
         }
@@ -762,6 +935,85 @@ HeadlessAnalysisCommand::ParseResult HeadlessAnalysisCommand::parse(int argc, ch
             }
             continue;
         }
+        if (parse_value(argc,
+                        argv,
+                        i,
+                        argument,
+                        "--taxonomy-id",
+                        "--headless-taxonomy-id",
+                        &value,
+                        &result)) {
+            if (result.error.empty() && !parse_positive_int(value, &result.options.taxonomy_id)) {
+                result.error = "Invalid --taxonomy-id value: " + value + ".";
+            }
+            continue;
+        }
+        if (parse_value(argc,
+                        argv,
+                        i,
+                        argument,
+                        "--category-language",
+                        "--headless-category-language",
+                        &value,
+                        &result)) {
+            if (result.error.empty()) {
+                result.options.category_language =
+                    categoryLanguageFromString(QString::fromStdString(value));
+            }
+            continue;
+        }
+        if (parse_value(argc,
+                        argv,
+                        i,
+                        argument,
+                        "--current-category",
+                        "--headless-current-category",
+                        &value,
+                        &result)) {
+            if (result.error.empty()) {
+                result.options.current_category = value;
+            }
+            continue;
+        }
+        if (parse_value(argc,
+                        argv,
+                        i,
+                        argument,
+                        "--current-subcategory",
+                        "--headless-current-subcategory",
+                        &value,
+                        &result)) {
+            if (result.error.empty()) {
+                result.options.current_subcategory = value;
+            }
+            continue;
+        }
+        if (parse_value(argc,
+                        argv,
+                        i,
+                        argument,
+                        "--category-label",
+                        "--headless-category-label",
+                        &value,
+                        &result)) {
+            if (result.error.empty()) {
+                result.options.corrected_category = value;
+            }
+            continue;
+        }
+        if (parse_value(argc,
+                        argv,
+                        i,
+                        argument,
+                        "--subcategory-label",
+                        "--headless-subcategory-label",
+                        &value,
+                        &result)) {
+            if (result.error.empty()) {
+                result.options.corrected_subcategory = value;
+            }
+            continue;
+        }
 
         if (argument_has_prefix(argument, "--headless-") ||
             argument_has_prefix(argument, "--operation=") ||
@@ -770,6 +1022,12 @@ HeadlessAnalysisCommand::ParseResult HeadlessAnalysisCommand::parse(int argc, ch
             argument_has_prefix(argument, "--review-file=") ||
             argument_has_prefix(argument, "--settings-overrides-file=") ||
             argument_has_prefix(argument, "--job-id=") ||
+            argument_has_prefix(argument, "--taxonomy-id=") ||
+            argument_has_prefix(argument, "--category-language=") ||
+            argument_has_prefix(argument, "--current-category=") ||
+            argument_has_prefix(argument, "--current-subcategory=") ||
+            argument_has_prefix(argument, "--category-label=") ||
+            argument_has_prefix(argument, "--subcategory-label=") ||
             argument_has_prefix(argument, "--include-subdirectories=") ||
             argument_has_prefix(argument, "--no-include-subdirectories=") ||
             is_value_argument(argument)) {
@@ -800,7 +1058,11 @@ std::string HeadlessAnalysisCommand::usage_text()
            "[--include-subdirectories|--no-include-subdirectories] "
            "[--settings-overrides-file <json-file>]\n"
            "       aifilesorter --headless-apply --review-file <json-file> "
-           "[--status-file <json-file>] [--job-id <id>]\n";
+           "[--status-file <json-file>] [--job-id <id>]\n"
+           "       aifilesorter --headless-correct-label --taxonomy-id <id> "
+           "--category-language <language> --current-category <label> "
+           "--current-subcategory <label> --category-label <label> "
+           "--subcategory-label <label> [--status-file <json-file>] [--job-id <id>]\n";
 }
 
 std::string HeadlessAnalysisCommand::operation_to_string(Operation operation)
@@ -861,7 +1123,9 @@ int HeadlessAnalysisCommand::run(const Options& options,
     AnalysisRuntimeLock::Metadata metadata;
     metadata.owner = AnalysisRuntimeLock::Owner::Headless;
     metadata.job_id = options.job_id;
-    metadata.description = "Headless " + operation_to_string(options.operation);
+    metadata.description = options.request_mode == RequestMode::CorrectLabel
+        ? "Headless label correction"
+        : "Headless " + operation_to_string(options.operation);
 
     std::string lock_error;
     auto lease = runtime_lock.try_acquire(metadata, &lock_error);
@@ -884,6 +1148,9 @@ int HeadlessAnalysisCommand::run(const Options& options,
                 out,
                 err);
 
+    if (options.request_mode == RequestMode::CorrectLabel) {
+        return run_label_correction(options, lease->metadata(), out, err);
+    }
     if (options.request_mode == RequestMode::ApplyReview) {
         return run_review_apply_plan(options, lease->metadata(), out, err);
     }
@@ -958,6 +1225,7 @@ int HeadlessAnalysisCommand::run(const Options& options,
         apply_options.apply_suggested_names = operation_applies_suggested_names(options.operation);
         apply_options.move_categorized_entries = operation_moves_categorized_entries(options.operation);
         apply_options.category_language = host.category_language();
+        apply_options.destination_root = host.destination_root();
         apply_options.apply_changes = should_apply_changes(options.apply_mode, host);
 
         HeadlessReviewApplyService apply_service(&host.db_manager(),

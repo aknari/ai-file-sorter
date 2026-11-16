@@ -2,6 +2,7 @@
 #define HEADLESS_ANALYSIS_COMMAND_HPP
 
 #include "AnalysisRuntimeLock.hpp"
+#include "CategoryLanguage.hpp"
 #include "HeadlessSettingsOverrides.hpp"
 
 #include <filesystem>
@@ -42,7 +43,8 @@ public:
      */
     enum class RequestMode {
         Analyze,
-        ApplyReview
+        ApplyReview,
+        CorrectLabel
     };
 
     /**
@@ -70,6 +72,12 @@ public:
         std::optional<std::filesystem::path> settings_overrides_file;
         HeadlessSettingsOverrides settings_overrides;
         std::string job_id;
+        int taxonomy_id{0};
+        CategoryLanguage category_language{CategoryLanguage::English};
+        std::string current_category;
+        std::string current_subcategory;
+        std::string corrected_category;
+        std::string corrected_subcategory;
     };
 
     /**

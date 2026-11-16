@@ -12,6 +12,15 @@ TEST_CASE("ReviewNameValidator validates filenames")
     CHECK(ReviewNameValidator::validate_filename(
         std::string("rapport_") + "\xC3\xA9" + "nergie.txt",
         error));
+    CHECK(ReviewNameValidator::validate_filename(
+        std::string("presentacio") + "\xCC\x81" + "n scrum metodologi" +
+            "\xCC\x81" + "a.pptx",
+        error));
+
+    CHECK_FALSE(ReviewNameValidator::validate_filename(
+        std::string("bad") + "\xC2\x81" + "control.txt",
+        error));
+    CHECK(error == "Filename contains disallowed characters");
 
     CHECK_FALSE(ReviewNameValidator::validate_filename("", error));
     CHECK(error == "Filename is empty");
@@ -34,6 +43,14 @@ TEST_CASE("ReviewNameValidator validates category labels")
     CHECK(ReviewNameValidator::validate_labels(
         std::string("Rapports ") + "\xC3\xA9" + "nergie",
         "Q2",
+        error));
+    CHECK(ReviewNameValidator::validate_labels(
+        std::string("Gui") + "\xCC\x81" + "as",
+        "General",
+        error));
+    CHECK(ReviewNameValidator::validate_labels(
+        "Libros",
+        std::string("Ingenieri") + "\xCC\x81" + "a",
         error));
 
     CHECK_FALSE(ReviewNameValidator::validate_labels("Documents", "Documents", error));

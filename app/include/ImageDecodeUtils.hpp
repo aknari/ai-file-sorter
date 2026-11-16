@@ -1,35 +1,49 @@
 /**
  * @file ImageDecodeUtils.hpp
  * @brief Shared image decoding helpers for visual analysis.
+ *
+ * The visual-analysis path only needs PNG bytes for the multimodal runtime, so
+ * this helper stays free of QtGui: Qt GUI image classes would otherwise force
+ * the headless engine to link QtWidgets/QtGui.
  */
 #pragma once
 
-#include <QByteArray>
-#include <QImage>
-#include <QSize>
-#include <QString>
-
 #include <string>
+#include <vector>
 
 namespace ImageDecodeUtils {
 
 /**
- * @brief Decode an image with Qt and fall back to runtime libwebp for WebP files.
- * @param image_path Absolute or relative path to the image file.
- * @param max_size Optional maximum size for the decoded image; invalid values keep original size.
- * @param error Receives a human-readable failure reason when decoding fails.
- * @return Decoded image, or a null image on failure.
+ * @brief Decoded image payload ready for the multimodal runtime.
  */
-QImage decode_image_with_webp_fallback(const QString& image_path,
-                                       const QSize& max_size = QSize(),
-                                       std::string* error = nullptr);
+struct DecodedImage {
+    /** @brief PNG-encoded image bytes. */
+    std::vector<unsigned char> png_bytes;
+    /** @brief Decoded pixel width, when known. */
+    int width{0};
+    /** @brief Decoded pixel height, when known. */
+    int height{0};
+
+    /**
+     * @brief Returns whether decoding produced usable bytes.
+     * @return True when PNG bytes are present.
+     */
+    bool valid() const { return !png_bytes.empty(); }
+};
 
 /**
- * @brief Encode a decoded image as PNG bytes.
- * @param image Image to encode.
- * @param png_bytes Destination buffer for encoded PNG data.
- * @return True when encoding succeeds.
+ * @brief Decode an image file and encode it as PNG bytes.
+ * @param image_path_utf8 Path to the image file as UTF-8 text.
+ * @param max_width Optional maximum width; values <= 0 keep the original size.
+ * @param max_height Optional maximum height; values <= 0 keep the original size.
+ * @param decoded Receives the decoded payload.
+ * @param error Receives a human-readable failure reason when decoding fails.
+ * @return True when the image was decoded and encoded.
  */
-bool encode_image_as_png_bytes(const QImage& image, QByteArray& png_bytes);
+bool decode_image_to_png(const std::string& image_path_utf8,
+                         int max_width,
+                         int max_height,
+                         DecodedImage& decoded,
+                         std::string* error = nullptr);
 
 } // namespace ImageDecodeUtils

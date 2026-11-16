@@ -19,7 +19,7 @@ struct NormalizedCategory {
 /**
  * @brief Normalize a category label for taxonomy comparisons.
  * @param input Display label to normalize.
- * @return Lowercase alphanumeric label with normalized spacing.
+ * @return Case-folded label with accents folded to base letters and normalized spacing.
  */
 std::string normalize_label(const std::string& input);
 
@@ -45,6 +45,23 @@ NormalizedCategory normalize_category(std::string category, std::string subcateg
  * @return Similarity score in the range 0.0 to 1.0.
  */
 double string_similarity(const std::string& a, const std::string& b);
+
+/**
+ * @brief Check whether a label edit is a small correction of the same label.
+ *
+ * Accent, case, punctuation, and whitespace-only changes always pass. Otherwise
+ * the labels must keep the same word count and first letter, and stay within a
+ * small edit distance. This rejects unrelated replacements such as
+ * "Guas" -> "Esternocleidomastoideo" while allowing "Guas" -> "Guías".
+ *
+ * @param old_label Current display label.
+ * @param new_label Proposed display label.
+ * @param reason Optional output describing why the edit was rejected.
+ * @return True when the edit is a minor correction of the same label.
+ */
+bool is_minor_label_correction(const std::string& old_label,
+                               const std::string& new_label,
+                               std::string* reason = nullptr);
 
 } // namespace DatabaseTaxonomyNormalizer
 

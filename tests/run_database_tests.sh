@@ -205,6 +205,7 @@ INCLUDES=(
     -I"$ROOT_DIR/app/include"
 )
 
+QT_PREFIX="$(qmake6 -query QT_INSTALL_PREFIX 2>/dev/null || true)"
 QT_HEADERS="$(qmake6 -query QT_INSTALL_HEADERS 2>/dev/null || true)"
 QT_LIB_DIR="$(qmake6 -query QT_INSTALL_LIBS 2>/dev/null || true)"
 if [[ -z "$QT_HEADERS" || -z "$QT_LIB_DIR" ]]; then
@@ -212,21 +213,38 @@ if [[ -z "$QT_HEADERS" || -z "$QT_LIB_DIR" ]]; then
     exit 1
 fi
 
+# Mirror the include ordering used by the CMake target. Putting both the Qt
+# prefix and QtCore on plain -I paths makes Qt's forwarding headers include
+# themselves recursively on Homebrew.
+if [[ -n "$QT_PREFIX" ]]; then
+    QT_CORE_INCLUDE="$QT_PREFIX/include/QtCore"
+    QT_PREFIX_INCLUDE="$QT_PREFIX/include"
+    QT_FRAMEWORK_DIR="$QT_PREFIX/lib"
+else
+    QT_CORE_INCLUDE="$QT_HEADERS/QtCore"
+    QT_PREFIX_INCLUDE="$QT_HEADERS"
+    QT_FRAMEWORK_DIR="$QT_LIB_DIR"
+fi
+
 INCLUDES+=(
-    -I"$QT_HEADERS"
-    -I"$QT_HEADERS/QtCore"
+    -isystem "$QT_CORE_INCLUDE"
+    -idirafter "$QT_PREFIX_INCLUDE"
+    -iframework "$QT_FRAMEWORK_DIR"
+    -DQT_CORE_LIB
 )
 
 LIBS=(
-    -L"$QT_LIB_DIR"
-    -lQt6Core
+    -F"$QT_FRAMEWORK_DIR"
+    -framework QtCore
+    -Wl,-rpath,"$QT_FRAMEWORK_DIR"
     -lsqlite3
     -pthread
 )
 
-g++ -std=c++20 -fPIC "${INCLUDES[@]}" \
+c++ -std=c++20 -fPIC "${INCLUDES[@]}" \
     "$TEST_SRC" "$STUB_SRC" \
     "$ROOT_DIR/app/lib/DatabaseManager.cpp" \
+    "$ROOT_DIR/app/lib/DatabaseTaxonomyNormalizer.cpp" \
     "$ROOT_DIR/app/lib/Utils.cpp" \
     -o "$OUTPUT" "${LIBS[@]}"
 

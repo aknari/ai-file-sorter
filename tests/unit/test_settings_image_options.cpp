@@ -89,6 +89,25 @@ TEST_CASE("Settings persists recent network locations") {
     CHECK(loaded.get_recent_network_locations().at(1) == "\\\\server-two\\archive");
 }
 
+TEST_CASE("Settings persists a separate destination folder") {
+    TempDir temp;
+    EnvVarGuard home_guard("HOME", temp.path().string());
+#ifdef _WIN32
+    EnvVarGuard appdata_guard("APPDATA", temp.path().string());
+#endif
+    EnvVarGuard config_guard("AI_FILE_SORTER_CONFIG_DIR", temp.path().string());
+
+    const std::string destination = (temp.path() / "store" / "sorted").string();
+    Settings settings;
+    settings.load();
+    settings.set_destination_folder(destination);
+    REQUIRE(settings.save());
+
+    Settings reloaded;
+    REQUIRE(reloaded.load());
+    CHECK(reloaded.get_destination_folder() == destination);
+}
+
 TEST_CASE("Settings defaults to one-level category folders when config key is missing") {
     TempDir temp;
     EnvVarGuard home_guard("HOME", temp.path().string());

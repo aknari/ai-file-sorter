@@ -13,6 +13,7 @@
 #include <QComboBox>
 #include <QDockWidget>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMainWindow>
 #include <QMenu>
 #include <QObject>
@@ -195,6 +196,17 @@ void UiTranslator::translate_primary_controls(bool analysis_in_progress) const
     }
     if (auto* button = raw_ptr(deps_.primary.browse_button)) {
         button->setText(tr("Browse…"));
+    }
+    if (auto* label = raw_ptr(deps_.primary.destination_label)) {
+        label->setText(tr("Destination folder:"));
+    }
+    if (auto* entry = raw_ptr(deps_.primary.destination_entry)) {
+        entry->setPlaceholderText(tr("Same as source folder"));
+        entry->setToolTip(tr("Optional. Leave empty to sort into the source folder."));
+    }
+    if (auto* button = raw_ptr(deps_.primary.destination_browse_button)) {
+        button->setText(tr("Browse…"));
+        button->setToolTip(tr("Choose a different destination folder"));
     }
     if (auto* checkbox = raw_ptr(deps_.primary.use_subcategories_checkbox)) {
         checkbox->setText(tr("Use subcategories"));

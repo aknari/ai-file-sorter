@@ -1,6 +1,7 @@
 #include "MovableCategorizedFile.hpp"
 #include "Utils.hpp"
 #include "Logger.hpp"
+#include "ReviewNameValidator.hpp"
 #include <filesystem>
 #include <cstdio>
 #include <algorithm>
@@ -24,17 +25,7 @@ std::string to_lower_copy_str(std::string value) {
 }
 
 bool contains_only_allowed_chars(const std::string& value) {
-    for (unsigned char ch : value) {
-        if (std::iscntrl(ch)) {
-            return false;
-        }
-        static const std::string forbidden = R"(<>:"/\|?*)";
-        if (forbidden.find(static_cast<char>(ch)) != std::string::npos) {
-            return false;
-        }
-        // Everything else is allowed (including non-ASCII letters and punctuation).
-    }
-    return true;
+    return ReviewNameValidator::contains_only_allowed_chars(value);
 }
 
 bool has_leading_or_trailing_space_or_dot(const std::string& value) {

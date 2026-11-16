@@ -1758,6 +1758,8 @@ std::optional<DatabaseManager::ResolvedCategory> CategorizationService::translat
         "- No parentheses.\n"
         "- No explanations.\n"
         "- No trailing periods.\n"
+        "- Preserve the target language's standard spelling, accents, and ñ.\n"
+        "- Never strip, replace, or simplify accented characters.\n"
         "- Keep the main category broad and concise.\n"
         "- Keep the subcategory specific and concise.\n\n"
         "category: {}\n"

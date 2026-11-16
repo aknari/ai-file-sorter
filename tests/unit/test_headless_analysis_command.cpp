@@ -6,6 +6,7 @@
 #include "HeadlessReviewApplyService.hpp"
 #include "LocalFsProvider.hpp"
 #include "Settings.hpp"
+#include "UserLearningStore.hpp"
 #include "Utils.hpp"
 
 #include <QByteArray>
@@ -274,6 +275,141 @@ TEST_CASE("HeadlessAnalysisCommand parses saved review apply requests")
     REQUIRE(parsed.options.status_file.has_value());
     CHECK(*parsed.options.status_file == status);
     CHECK(parsed.options.job_id == "apply-job");
+}
+
+TEST_CASE("HeadlessAnalysisCommand parses label correction requests")
+{
+    char arg0[] = "aifilesorter";
+    char arg1[] = "--headless-correct-label";
+    char arg2[] = "--taxonomy-id";
+    char arg3[] = "482";
+    char arg4[] = "--category-language";
+    char arg5[] = "Spanish";
+    char arg6[] = "--current-category";
+    char arg7[] = "Guas";
+    char arg8[] = "--current-subcategory";
+    char arg9[] = "General";
+    char arg10[] = "--category-label";
+    char arg11[] = "Guías";
+    char arg12[] = "--subcategory-label";
+    char arg13[] = "General";
+    char arg14[] = "--job-id=label-job";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
+                    arg10, arg11, arg12, arg13, arg14};
+
+    const auto parsed = HeadlessAnalysisCommand::parse(15, argv);
+    REQUIRE(parsed.requested);
+    CHECK(parsed.error.empty());
+    CHECK(parsed.options.request_mode == HeadlessAnalysisCommand::RequestMode::CorrectLabel);
+    CHECK(parsed.options.taxonomy_id == 482);
+    CHECK(parsed.options.category_language == CategoryLanguage::Spanish);
+    CHECK(parsed.options.current_category == "Guas");
+    CHECK(parsed.options.current_subcategory == "General");
+    CHECK(parsed.options.corrected_category == "Guías");
+    CHECK(parsed.options.corrected_subcategory == "General");
+    CHECK(parsed.options.job_id == "label-job");
+}
+
+TEST_CASE("HeadlessAnalysisCommand rejects unrelated label replacements")
+{
+    char arg0[] = "aifilesorter";
+    char arg1[] = "--headless-correct-label";
+    char arg2[] = "--taxonomy-id=482";
+    char arg3[] = "--category-language=Spanish";
+    char arg4[] = "--current-category=Guas";
+    char arg5[] = "--current-subcategory=General";
+    char arg6[] = "--category-label=Esternocleidomastoideo";
+    char arg7[] = "--subcategory-label=General";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7};
+
+    const auto parsed = HeadlessAnalysisCommand::parse(8, argv);
+    REQUIRE(parsed.requested);
+    CHECK(parsed.error.empty());
+
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    QTemporaryDir config_root;
+    REQUIRE(config_root.isValid());
+    ScopedEnvironmentVariable config_env("AI_FILE_SORTER_CONFIG_DIR",
+                                         config_root.path().toUtf8());
+
+    const QString config_path = QDir(config_root.path()).filePath(QStringLiteral("AIFileSorter"));
+    REQUIRE(QDir().mkpath(config_path));
+    const std::string config_dir = config_path.toStdString();
+    int taxonomy_id = 0;
+    {
+        DatabaseManager db(config_dir);
+        taxonomy_id = db.resolve_category("Guides", "General").taxonomy_id;
+        REQUIRE(taxonomy_id > 0);
+    }
+
+    auto options = parsed.options;
+    options.taxonomy_id = taxonomy_id;
+    options.status_file = std::filesystem::path(dir.path().toStdString()) / "status.json";
+    std::ostringstream out;
+    std::ostringstream err;
+    const int exit_code = HeadlessAnalysisCommand::run(
+        options, std::filesystem::path(dir.path().toStdString()) / "runtime", out, err);
+
+    CHECK(exit_code == HeadlessAnalysisCommand::Usage);
+    const QJsonObject status = read_status(*options.status_file);
+    CHECK(status.value(QStringLiteral("status")).toString() == QStringLiteral("failed"));
+    CHECK(status.value(QStringLiteral("error")).toString().contains(QStringLiteral("Category:")));
+}
+
+TEST_CASE("HeadlessAnalysisCommand persists a valid label correction")
+{
+    QTemporaryDir dir;
+    REQUIRE(dir.isValid());
+    QTemporaryDir config_root;
+    REQUIRE(config_root.isValid());
+    ScopedEnvironmentVariable config_env("AI_FILE_SORTER_CONFIG_DIR",
+                                         config_root.path().toUtf8());
+
+    const QString config_path = QDir(config_root.path()).filePath(QStringLiteral("AIFileSorter"));
+    REQUIRE(QDir().mkpath(config_path));
+    const std::string config_dir = config_path.toStdString();
+    int taxonomy_id = 0;
+    {
+        DatabaseManager db(config_dir);
+        const auto taxonomy = db.resolve_category("Guides", "General");
+        REQUIRE(taxonomy.taxonomy_id > 0);
+        taxonomy_id = taxonomy.taxonomy_id;
+    }
+
+    const std::filesystem::path status_path =
+        std::filesystem::path(dir.path().toStdString()) / "status.json";
+    HeadlessAnalysisCommand::Options options;
+    options.request_mode = HeadlessAnalysisCommand::RequestMode::CorrectLabel;
+    options.taxonomy_id = taxonomy_id;
+    options.category_language = CategoryLanguage::Spanish;
+    options.current_category = "Guas";
+    options.current_subcategory = "General";
+    options.corrected_category = "Guías";
+    options.corrected_subcategory = "General";
+    options.status_file = status_path;
+    options.job_id = "label-correction";
+
+    std::ostringstream out;
+    std::ostringstream err;
+    const int exit_code = HeadlessAnalysisCommand::run(
+        options, std::filesystem::path(dir.path().toStdString()) / "runtime", out, err);
+
+    CHECK(exit_code == HeadlessAnalysisCommand::Success);
+    const QJsonObject status = read_status(status_path);
+    CHECK(status.value(QStringLiteral("status")).toString() == QStringLiteral("completed"));
+    CHECK(status.value(QStringLiteral("category")).toString() == QStringLiteral("Guías"));
+    CHECK(status.value(QStringLiteral("subcategory")).toString() == QStringLiteral("General"));
+
+    UserLearningStore store(config_dir);
+    REQUIRE(store.is_open());
+    const auto overrides = store.category_label_overrides();
+    REQUIRE(overrides.size() == 1);
+    CHECK(overrides.front().category == "Guides");
+    CHECK(overrides.front().subcategory == "General");
+    CHECK(overrides.front().language == "spanish");
+    CHECK(overrides.front().display_category == "Guías");
+    CHECK(overrides.front().display_subcategory == "General");
 }
 
 TEST_CASE("HeadlessAnalysisCommand reports busy runtime lock")

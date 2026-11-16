@@ -214,7 +214,10 @@ bool FileScanner::is_file_hidden(const fs::path &path) const {
 
 bool FileScanner::is_junk_file(const std::string& name) const {
     static const std::unordered_set<std::string> junk = {
-        ".DS_Store", "Thumbs.db", "desktop.ini"
+        ".DS_Store", "Thumbs.db", "desktop.ini",
+        // Finder's custom folder icon marker: the file is literally named
+        // "Icon" plus a carriage return. It must never be categorized.
+        "Icon\r"
     };
     return junk.contains(name);
 }

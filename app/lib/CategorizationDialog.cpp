@@ -3,6 +3,7 @@
 #include "AppTheme.hpp"
 #include "BulkEditDialog.hpp"
 #include "DatabaseManager.hpp"
+#include "DatabaseTaxonomyNormalizer.hpp"
 #include "LocalFsProvider.hpp"
 #include "Logger.hpp"
 #include "MovableCategorizedFile.hpp"
@@ -58,6 +59,10 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
+#include <QFormLayout>
+#include <QLineEdit>
 
 #include <fmt/format.h>
 
@@ -461,6 +466,7 @@ void CategorizationDialog::setup_ui()
     keep_original_button = new QPushButton(this);
     keep_original_button->setObjectName(QStringLiteral("aifsKeepOriginalNameButton"));
     bulk_edit_button = new QPushButton(this);
+    correct_label_button = new QPushButton(this);
 
     select_layout->addWidget(select_all_checkbox);
     select_layout->addWidget(auto_approve_filenames_checkbox);
@@ -468,6 +474,7 @@ void CategorizationDialog::setup_ui()
     select_layout->addWidget(select_highlighted_button);
     select_layout->addWidget(keep_original_button);
     select_layout->addWidget(bulk_edit_button);
+    select_layout->addWidget(correct_label_button);
     select_layout->addStretch(1);
     scroll_layout->addLayout(select_layout);
 
@@ -607,6 +614,7 @@ void CategorizationDialog::setup_ui()
     connect(select_highlighted_button, &QPushButton::clicked, this, &CategorizationDialog::on_select_highlighted_clicked);
     connect(keep_original_button, &QPushButton::clicked, this, &CategorizationDialog::on_keep_original_names_clicked);
     connect(bulk_edit_button, &QPushButton::clicked, this, &CategorizationDialog::on_bulk_edit_clicked);
+    connect(correct_label_button, &QPushButton::clicked, this, &CategorizationDialog::on_correct_label_clicked);
     connect(model, &QStandardItemModel::itemChanged, this, &CategorizationDialog::on_item_changed);
     connect(table_view, &QTableView::doubleClicked, this, &CategorizationDialog::on_table_double_clicked);
     connect(show_subcategories_checkbox, &QCheckBox::toggled,
@@ -626,6 +634,7 @@ void CategorizationDialog::setup_ui()
                 this,
                 [this]() {
                     update_preview_button_state();
+                    update_correct_label_button_state();
                     update_path_detail();
                 });
     }
@@ -996,6 +1005,7 @@ void CategorizationDialog::populate_model()
     }
     update_select_all_state();
     update_preview_button_state();
+    update_correct_label_button_state();
 }
 
 void CategorizationDialog::update_type_icon(QStandardItem* item)
@@ -1281,79 +1291,8 @@ void CategorizationDialog::on_confirm_and_sort_button_clicked()
 
     std::vector<std::string> files_not_moved;
     ScopedFlag guard(suppress_item_changed_);
-    if (include_subdirectories_) {
-        struct CollisionState {
-            std::unordered_set<std::string> used_names;
-            std::unordered_map<std::string, int> next_index;
-        };
-        std::unordered_map<std::string, CollisionState> collisions;
-        collisions.reserve(static_cast<size_t>(model->rowCount()));
-
-        for (int row_index = 0; row_index < model->rowCount(); ++row_index) {
-            auto* select_item = model->item(row_index, ColumnSelect);
-            if (select_item && select_item->checkState() != Qt::Checked) {
-                continue;
-            }
-            auto* file_item = model->item(row_index, ColumnFile);
-            auto* category_item = model->item(row_index, ColumnCategory);
-            auto* subcategory_item = model->item(row_index, ColumnSubcategory);
-            auto* rename_item = model->item(row_index, ColumnSuggestedName);
-            if (!file_item || !category_item) {
-                continue;
-            }
-
-            bool rename_only = false;
-            bool used_consistency_hints = false;
-            FileType file_type = FileType::File;
-            if (!resolve_row_flags(row_index, rename_only, used_consistency_hints, file_type)) {
-                continue;
-            }
-            (void)used_consistency_hints;
-            if (rename_only) {
-                continue;
-            }
-
-            std::string category = read_item_or_hidden_text(category_item, kHiddenCategoryRole);
-            if (is_missing_category_label(category)) {
-                continue;
-            }
-            std::string subcategory = read_item_or_hidden_text(subcategory_item, kHiddenSubcategoryRole);
-            if (is_missing_category_label(subcategory)) {
-                subcategory.clear();
-            }
-
-            const std::string file_name = file_item->text().toStdString();
-            const std::string rename_candidate = effective_rename_candidate(row_index);
-            std::string source_dir = file_item->data(kFilePathRole).toString().toStdString();
-            if (source_dir.empty()) {
-                source_dir = base_dir;
-            }
-
-            CategorizedFile file;
-            file.file_path = source_dir;
-            file.file_name = file_name;
-            file.type = file_type;
-            file.category = category;
-            file.subcategory = subcategory;
-            file.rename_only = false;
-
-            const auto target_dir = build_suggested_target_dir(file, base_dir, show_subcategory_column);
-            const std::string dir_key = Utils::path_to_utf8(target_dir);
-            auto& state = collisions[dir_key];
-            const std::string desired_name = resolve_destination_name(file_name, rename_candidate);
-            const std::string unique_name = build_unique_move_name(desired_name,
-                                                                   target_dir,
-                                                                   state.used_names,
-                                                                   state.next_index);
-            state.used_names.insert(to_lower_copy_str(unique_name));
-            if (unique_name != desired_name && row_rename_accepted(row_index)) {
-                if (rename_item) {
-                    rename_item->setText(QString::fromStdString(unique_name));
-                }
-                update_preview_column(row_index);
-            }
-        }
-    }
+    MoveCollisionMap collisions;
+    collisions.reserve(static_cast<size_t>(model->rowCount()));
 
     for (int row_index = 0; row_index < model->rowCount(); ++row_index) {
         auto* select_item = model->item(row_index, ColumnSelect);
@@ -1395,6 +1334,7 @@ void CategorizationDialog::on_confirm_and_sort_button_clicked()
                             subcategory,
                             source_dir,
                             base_dir,
+                            collisions,
                             files_not_moved,
                             file_type,
                             rename_only,
@@ -1449,12 +1389,7 @@ void CategorizationDialog::on_confirm_and_sort_button_clicked()
 #endif
             if (rename_images_only_active) {
                 to_label = rec->destination_file_name;
-                if (!base_dir.empty()) {
-                    destination = Utils::path_to_utf8(
-                        Utils::utf8_to_path(base_dir) / Utils::utf8_to_path(rec->destination_file_name));
-                } else {
-                    destination = rec->destination;
-                }
+                destination = rec->destination;
             } else if (rec->rename_only) {
                 to_label = rec->destination_file_name;
                 destination = rec->destination;
@@ -1514,14 +1449,15 @@ void CategorizationDialog::handle_selected_row(int row_index,
                                                const std::string& subcategory,
                                                const std::string& source_dir,
                                                const std::string& base_dir,
+                                               MoveCollisionMap& collisions,
                                                std::vector<std::string>& files_not_moved,
                                                FileType file_type,
                                                bool rename_only,
                                                bool used_consistency_hints,
                                                bool dry_run)
 {
-    const std::string destination_name = resolve_destination_name(file_name, rename_candidate);
-    const bool rename_active = destination_name != file_name;
+    std::string destination_name = resolve_destination_name(file_name, rename_candidate);
+    bool rename_active = destination_name != file_name;
     const bool rename_accepted = row_rename_accepted(row_index);
     auto* category_item_ref = model ? model->item(row_index, ColumnCategory) : nullptr;
     auto* subcategory_item_ref = model ? model->item(row_index, ColumnSubcategory) : nullptr;
@@ -1583,6 +1519,9 @@ void CategorizationDialog::handle_selected_row(int row_index,
             update_status_column(row_index, true, true, false, false);
             return;
         }
+
+        destination_name = unique_destination_name(destination_name, source_dir, collisions);
+        rename_active = destination_name != file_name;
 
         const auto source_path = Utils::utf8_to_path(source_dir) / Utils::utf8_to_path(file_name);
         const auto dest_path = Utils::utf8_to_path(source_dir) / Utils::utf8_to_path(destination_name);
@@ -1703,6 +1642,17 @@ void CategorizationDialog::handle_selected_row(int row_index,
         return;
     }
 
+    CategorizedFile target_file;
+    target_file.file_path = source_dir;
+    target_file.category = category;
+    target_file.subcategory = effective_subcategory;
+    target_file.type = file_type;
+    const auto target_dir = ReviewFileNaming::build_suggested_target_dir(
+        target_file, base_dir, show_subcategory_column);
+    destination_name = unique_destination_name(
+        destination_name, Utils::path_to_utf8(target_dir), collisions);
+    rename_active = destination_name != file_name;
+
     try {
         MovableCategorizedFile categorized_file(
             *storage_provider_, source_dir, base_dir, category, effective_subcategory, file_name, destination_name);
@@ -1782,7 +1732,7 @@ void CategorizationDialog::handle_selected_row(int row_index,
                     : db_manager->resolve_category_for_language(category,
                                                                 effective_subcategory,
                                                                 category_language_);
-                const std::string source_db_dir = include_subdirectories_ ? source_dir : base_dir;
+                const std::string source_db_dir = source_dir;
                 std::string destination_db_dir = base_dir;
                 if (include_subdirectories_) {
                     const auto dest_parent = Utils::utf8_to_path(preview_paths.destination).parent_path();
@@ -2250,6 +2200,13 @@ bool CategorizationDialog::move_file_back(const std::string& source, const std::
                            source,
                            undo_result.message.empty() ? "unknown error" : undo_result.message);
     }
+    if (undo_result.success && !base_dir_.empty()) {
+        // Storage providers clean up empty parent folders after undo. Recreate
+        // the configured destination root so a separate destination survives
+        // undoing its last moved file.
+        std::error_code ec;
+        std::filesystem::create_directories(Utils::utf8_to_path(base_dir_), ec);
+    }
     return undo_result.success;
 }
 
@@ -2444,6 +2401,235 @@ void CategorizationDialog::on_bulk_edit_clicked()
                 subcategory_item->setText(QString::fromStdString(subcategory));
             }
         }
+    }
+}
+
+void CategorizationDialog::update_correct_label_button_state()
+{
+    if (!correct_label_button) {
+        return;
+    }
+
+    bool enabled = false;
+    if (model && table_view &&
+        category_language_ != CategoryLanguage::English &&
+        !table_view->isColumnHidden(ColumnCategory)) {
+        const auto rows = selected_row_indices();
+        if (rows.size() == 1) {
+            const auto* category_item = model->item(rows.front(), ColumnCategory);
+            enabled = category_item && !category_item->text().trimmed().isEmpty();
+        }
+    }
+    correct_label_button->setEnabled(enabled);
+}
+
+void CategorizationDialog::on_correct_label_clicked()
+{
+    if (!model || !table_view || !db_manager) {
+        return;
+    }
+    if (category_language_ == CategoryLanguage::English) {
+        QMessageBox::information(this,
+                                 tr("Label correction unavailable"),
+                                 tr("Label corrections are only available when the category language is not English."));
+        return;
+    }
+    if (!learning_store_) {
+        QMessageBox::warning(this,
+                             tr("Label correction unavailable"),
+                             tr("The user learning store is not available."));
+        return;
+    }
+
+    const auto rows = selected_row_indices();
+    if (rows.size() != 1) {
+        QMessageBox::information(this,
+                                 tr("Select one row"),
+                                 tr("Select exactly one row whose category label you want to correct."));
+        return;
+    }
+
+    const int row = rows.front();
+    auto* category_item = model->item(row, ColumnCategory);
+    auto* subcategory_item = model->item(row, ColumnSubcategory);
+    if (!category_item) {
+        return;
+    }
+
+    const auto read_item_text = [](QStandardItem* item, int hidden_role) {
+        if (!item) {
+            return std::string();
+        }
+        const QString hidden = item->data(hidden_role).toString();
+        return (hidden.isEmpty() ? item->text() : hidden).toStdString();
+    };
+    const std::string old_category = read_item_text(category_item, kHiddenCategoryRole);
+    const std::string old_subcategory = read_item_text(subcategory_item, kHiddenSubcategoryRole);
+    if (old_category.empty()) {
+        QMessageBox::information(this,
+                                 tr("No category label"),
+                                 tr("The selected row has no category label to correct."));
+        return;
+    }
+
+    std::string canonical_category =
+        category_item->data(kCanonicalCategoryRole).toString().toStdString();
+    std::string canonical_subcategory = subcategory_item
+        ? subcategory_item->data(kCanonicalSubcategoryRole).toString().toStdString()
+        : std::string();
+    if (canonical_category.empty()) {
+        const auto resolved = db_manager->resolve_category_for_language(old_category,
+                                                                        old_subcategory,
+                                                                        category_language_);
+        canonical_category = resolved.category;
+        canonical_subcategory = resolved.subcategory;
+    }
+    const auto canonical = db_manager->resolve_category(canonical_category, canonical_subcategory);
+    if (canonical.taxonomy_id <= 0 || canonical.category.empty()) {
+        QMessageBox::warning(this,
+                             tr("Category not found"),
+                             tr("The selected row is not linked to a reusable taxonomy entry."));
+        return;
+    }
+    canonical_category = canonical.category;
+    canonical_subcategory = canonical.subcategory;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Correct category label"));
+    auto* layout = new QVBoxLayout(&dialog);
+    auto* explanation = new QLabel(
+        tr("This changes the label for every file in \"%1 / %2\".\n"
+           "It does not move or reclassify files. Use \"Edit selected...\" for that.")
+            .arg(QString::fromStdString(old_category),
+                 QString::fromStdString(old_subcategory)),
+        &dialog);
+    explanation->setWordWrap(true);
+    layout->addWidget(explanation);
+
+    auto* form = new QFormLayout();
+    auto* category_edit = new QLineEdit(QString::fromStdString(old_category), &dialog);
+    auto* subcategory_edit = new QLineEdit(QString::fromStdString(old_subcategory), &dialog);
+    category_edit->selectAll();
+    form->addRow(tr("Category:"), category_edit);
+    form->addRow(tr("Subcategory:"), subcategory_edit);
+    layout->addLayout(form);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+    layout->addWidget(buttons);
+
+    while (dialog.exec() == QDialog::Accepted) {
+        const std::string new_category = category_edit->text().trimmed().toStdString();
+        const std::string new_subcategory = subcategory_edit->text().trimmed().toStdString();
+
+        std::string category_reason;
+        std::string subcategory_reason;
+        if (!DatabaseTaxonomyNormalizer::is_minor_label_correction(
+                old_category, new_category, &category_reason) ||
+            !DatabaseTaxonomyNormalizer::is_minor_label_correction(
+                old_subcategory, new_subcategory, &subcategory_reason)) {
+            QMessageBox::warning(
+                &dialog,
+                tr("Not a label correction"),
+                tr("This looks like a different category or subcategory, not a small label correction.\n\n"
+                   "Use \"Edit selected...\" to reclassify files."));
+            continue;
+        }
+        if (new_category == old_category && new_subcategory == old_subcategory) {
+            return;
+        }
+
+        const std::string display_subcategory =
+            new_subcategory.empty() ? canonical_subcategory : new_subcategory;
+        const auto answer = QMessageBox::question(
+            this,
+            tr("Apply label correction?"),
+            tr("Change the label for all \"%1 / %2\" entries from \"%3 / %4\" to \"%5 / %6\"?")
+                .arg(QString::fromStdString(canonical_category),
+                     QString::fromStdString(canonical_subcategory),
+                     QString::fromStdString(old_category),
+                     QString::fromStdString(old_subcategory),
+                     QString::fromStdString(new_category),
+                     QString::fromStdString(display_subcategory)),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
+            continue;
+        }
+
+        std::string error;
+        if (!learning_store_->upsert_category_label_override(canonical_category,
+                                                              canonical_subcategory,
+                                                              categoryLanguageDisplay(category_language_),
+                                                              new_category,
+                                                              display_subcategory,
+                                                              &error)) {
+            QMessageBox::warning(&dialog,
+                                 tr("Could not save label correction"),
+                                 tr("Failed to save the label correction: %1")
+                                     .arg(QString::fromStdString(error)));
+            continue;
+        }
+
+        db_manager->set_user_label_override(canonical_category,
+                                            canonical_subcategory,
+                                            category_language_,
+                                            new_category,
+                                            display_subcategory);
+
+        const std::string normalized_canonical_category =
+            DatabaseTaxonomyNormalizer::normalize_label(canonical_category);
+        const std::string normalized_canonical_subcategory =
+            DatabaseTaxonomyNormalizer::normalize_label(canonical_subcategory);
+        {
+            ScopedFlag guard(suppress_item_changed_);
+            for (int current_row = 0; current_row < model->rowCount(); ++current_row) {
+                auto* current_category_item = model->item(current_row, ColumnCategory);
+                auto* current_subcategory_item = model->item(current_row, ColumnSubcategory);
+                const std::string row_canonical_category = current_category_item
+                    ? current_category_item->data(kCanonicalCategoryRole).toString().toStdString()
+                    : std::string();
+                const std::string row_canonical_subcategory = current_subcategory_item
+                    ? current_subcategory_item->data(kCanonicalSubcategoryRole).toString().toStdString()
+                    : std::string();
+                if (DatabaseTaxonomyNormalizer::normalize_label(row_canonical_category) !=
+                        normalized_canonical_category ||
+                    DatabaseTaxonomyNormalizer::normalize_label(row_canonical_subcategory) !=
+                        normalized_canonical_subcategory) {
+                    continue;
+                }
+                if (current_category_item) {
+                    current_category_item->setText(QString::fromStdString(new_category));
+                    current_category_item->setData(QString::fromStdString(new_category),
+                                                   kOriginalCategoryRole);
+                    if (current_category_item->data(kHiddenCategoryRole).isValid()) {
+                        current_category_item->setData(QString::fromStdString(new_category),
+                                                       kHiddenCategoryRole);
+                    }
+                }
+                if (current_subcategory_item) {
+                    current_subcategory_item->setText(QString::fromStdString(display_subcategory));
+                    current_subcategory_item->setData(QString::fromStdString(display_subcategory),
+                                                      kOriginalSubcategoryRole);
+                    if (current_subcategory_item->data(kHiddenSubcategoryRole).isValid()) {
+                        current_subcategory_item->setData(QString::fromStdString(display_subcategory),
+                                                          kHiddenSubcategoryRole);
+                    }
+                }
+                update_preview_column(current_row);
+            }
+        }
+        update_path_detail();
+        update_correct_label_button_state();
+        if (core_logger) {
+            core_logger->info("Corrected category label '{} / {}' to '{} / {}'",
+                              canonical_category,
+                              canonical_subcategory,
+                              new_category,
+                              display_subcategory);
+        }
+        return;
     }
 }
 
@@ -2653,6 +2839,9 @@ void CategorizationDialog::apply_category_visibility()
         table_view->setColumnHidden(ColumnCategory, !show_category_column);
         if (bulk_edit_button) {
             bulk_edit_button->setEnabled(show_category_column);
+        }
+        if (correct_label_button) {
+            update_correct_label_button_state();
         }
         if (model) {
             auto update_item = [](QStandardItem* item, int role, bool hide) {
@@ -2942,6 +3131,27 @@ CategorizationDialog::build_preview_record_for_row(int row, std::string* debug_r
     }
 }
 
+std::string CategorizationDialog::unique_destination_name(
+    const std::string& desired_name,
+    const std::string& target_dir,
+    MoveCollisionMap& collisions) const
+{
+    if (target_dir.empty()) {
+        return desired_name;
+    }
+
+    const std::string dir_key = Utils::path_to_utf8(
+        Utils::utf8_to_path(target_dir).lexically_normal());
+    auto& state = collisions[dir_key];
+    const std::string unique_name = ReviewFileNaming::build_unique_move_name(
+        desired_name,
+        Utils::utf8_to_path(target_dir),
+        state.used_names,
+        state.next_index);
+    state.used_names.insert(ReviewFileNaming::to_lower_copy_str(unique_name));
+    return unique_name;
+}
+
 std::string CategorizationDialog::resolve_destination_name(const std::string& original_name,
                                                            const std::string& rename_candidate) const
 {
@@ -3142,6 +3352,7 @@ void CategorizationDialog::retranslate_ui()
     set_text_if(select_highlighted_button, tr("Select highlighted"));
     set_text_if(keep_original_button, tr("Keep original name"));
     set_text_if(bulk_edit_button, tr("Edit selected..."));
+    set_text_if(correct_label_button, tr("Correct label..."));
     set_text_if(show_subcategories_checkbox, tr("Create subcategory folders"));
     set_text_if(dry_run_checkbox, tr("Dry run (preview only, do not move files)"));
     set_text_if(rename_images_only_checkbox, tr("Do not categorize picture files (only rename)"));
@@ -3169,6 +3380,11 @@ void CategorizationDialog::retranslate_ui()
     }
     if (bulk_edit_button) {
         bulk_edit_button->setToolTip(tr("Apply category/subcategory values to highlighted rows."));
+    }
+    if (correct_label_button) {
+        correct_label_button->setToolTip(
+            tr("Correct a typo or accent in the category label for every file in that category. "
+               "This does not reclassify files; use Edit selected... for that."));
     }
 
     if (model) {
@@ -3376,11 +3592,14 @@ void CategorizationDialog::set_show_rename_column(bool enabled)
     apply_rename_visibility();
 }
 #ifdef AI_FILE_SORTER_TEST_BUILD
-void CategorizationDialog::test_set_entries(const std::vector<CategorizedFile>& files) {
+void CategorizationDialog::test_set_entries(const std::vector<CategorizedFile>& files,
+                                             const std::string& base_dir_override) {
     categorized_files = files;
     include_subdirectories_ = false;
     base_dir_.clear();
-    if (!categorized_files.empty()) {
+    if (!base_dir_override.empty()) {
+        base_dir_ = base_dir_override;
+    } else if (!categorized_files.empty()) {
         base_dir_ = categorized_files.front().file_path;
     }
     ensure_unique_suggested_names(categorized_files, base_dir_, show_subcategory_column);

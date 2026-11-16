@@ -16,6 +16,7 @@ GUI classes directly.
 ```text
 Usage: aifilesorter --headless --operation <categorize|rename|categorize-and-rename> --path <file-or-folder> [--path <file-or-folder> ...] [--status-file <json-file>] [--job-id <id>] [--review-file <json-file>] [--review-only|--auto-apply] [--include-subdirectories|--no-include-subdirectories] [--settings-overrides-file <json-file>]
        aifilesorter --headless-apply --review-file <json-file> [--status-file <json-file>] [--job-id <id>]
+       aifilesorter --headless-correct-label --taxonomy-id <id> --category-language <language> --current-category <label> --current-subcategory <label> --category-label <label> --subcategory-label <label> [--status-file <json-file>] [--job-id <id>]
 ```
 
 ## Supported targets
@@ -40,6 +41,9 @@ that arbitrary file collections are accepted.
   plan.
 - `--headless-apply`: apply a previously saved review plan exactly, without
   rerunning analysis.
+- `--headless-correct-label`: persist a minor display-label correction for a
+  taxonomy id without reclassifying files. The correction is validated by the
+  shared taxonomy normalizer and applies to future and cached categorizations.
 
 ## Review and apply flow
 

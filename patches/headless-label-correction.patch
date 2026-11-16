@@ -1,0 +1,3227 @@
+diff --git a/app/CMakeLists.txt b/app/CMakeLists.txt
+index 0e1a54e..be28fff 100644
+--- a/app/CMakeLists.txt
++++ b/app/CMakeLists.txt
+@@ -1576,6 +1576,7 @@ if(AI_FILE_SORTER_BUILD_TESTS)
+         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_app_test_runner.cpp"
+         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_user_learning_store.cpp"
+         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_database_manager_rename_only.cpp"
++        "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_taxonomy_normalization.cpp"
+         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_cache_interactions.cpp"
+         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_image_rename_metadata_service.cpp"
+         "${CMAKE_CURRENT_SOURCE_DIR}/../tests/unit/test_filename_localization_service.cpp"
+diff --git a/app/include/CategorizationDialog.hpp b/app/include/CategorizationDialog.hpp
+index 02ebbb5..7f30c8b 100644
+--- a/app/include/CategorizationDialog.hpp
++++ b/app/include/CategorizationDialog.hpp
+@@ -11,6 +11,8 @@
+ #include <memory>
+ #include <optional>
+ #include <tuple>
++#include <unordered_map>
++#include <unordered_set>
+ #include <vector>
+ #include <spdlog/logger.h>
+ 
+@@ -99,7 +101,8 @@ public:
+     void set_file_preview_service(std::unique_ptr<IFilePreviewService> preview_service);
+ 
+ #ifdef AI_FILE_SORTER_TEST_BUILD
+-    void test_set_entries(const std::vector<CategorizedFile>& files);
++    void test_set_entries(const std::vector<CategorizedFile>& files,
++                          const std::string& base_dir_override = std::string());
+     void test_trigger_confirm();
+     bool test_trigger_preview(int row);
+     void test_trigger_undo();
+@@ -269,6 +272,12 @@ private:
+                               const std::string& stable_identity,
+                               const std::string& revision_token,
+                               long long history_id = 0);
++    struct MoveCollisionState {
++        std::unordered_set<std::string> used_names;
++        std::unordered_map<std::string, int> next_index;
++    };
++    using MoveCollisionMap = std::unordered_map<std::string, MoveCollisionState>;
++
+     void handle_selected_row(int row_index,
+                              const std::string& file_name,
+                              const std::string& rename_candidate,
+@@ -276,6 +285,7 @@ private:
+                              const std::string& subcategory,
+                              const std::string& source_dir,
+                              const std::string& base_dir,
++                             MoveCollisionMap& collisions,
+                              std::vector<std::string>& files_not_moved,
+                              FileType file_type,
+                              bool rename_only,
+@@ -326,6 +336,16 @@ private:
+     std::optional<PreviewRecord> build_preview_record_for_row(int row, std::string* debug_reason = nullptr) const;
+     std::string resolve_destination_name(const std::string& original_name,
+                                          const std::string& rename_candidate) const;
++    /**
++     * @brief Resolves a collision-free destination name for the current run.
++     * @param desired_name Preferred filename.
++     * @param target_dir Destination directory.
++     * @param collisions Per-directory names already reserved by this run.
++     * @return Unused filename, numbered with ` (1)`, ` (2)`, ... when needed.
++     */
++    std::string unique_destination_name(const std::string& desired_name,
++                                        const std::string& target_dir,
++                                        MoveCollisionMap& collisions) const;
+     /**
+      * @brief Returns whether the row's suggested filename should be applied.
+      * @param row Row index in the model.
+@@ -411,6 +431,14 @@ private:
+      * @brief Opens a dialog to bulk edit categories for highlighted rows.
+      */
+     void on_bulk_edit_clicked();
++    /**
++     * @brief Opens a dialog to correct the display label of the selected taxonomy entry.
++     */
++    void on_correct_label_clicked();
++    /**
++     * @brief Enables the label-correction action when exactly one valid row is selected.
++     */
++    void update_correct_label_button_state();
+ 
+     DatabaseManager* db_manager;
+     UserLearningStore* learning_store_{nullptr};
+@@ -441,6 +469,7 @@ private:
+     QPushButton* select_highlighted_button{nullptr};
+     QPushButton* keep_original_button{nullptr};
+     QPushButton* bulk_edit_button{nullptr};
++    QPushButton* correct_label_button{nullptr};
+     QCheckBox* show_subcategories_checkbox{nullptr};
+     QCheckBox* dry_run_checkbox{nullptr};
+     QCheckBox* rename_images_only_checkbox{nullptr};
+diff --git a/app/include/DatabaseManager.hpp b/app/include/DatabaseManager.hpp
+index 339ff40..e9fddb3 100644
+--- a/app/include/DatabaseManager.hpp
++++ b/app/include/DatabaseManager.hpp
+@@ -29,6 +29,12 @@ public:
+                                                    CategoryLanguage language);
+     std::optional<ResolvedCategory> get_category_translation(int taxonomy_id,
+                                                              CategoryLanguage language) const;
++    /**
++     * @brief Return the canonical labels for a taxonomy id.
++     * @param taxonomy_id Stable taxonomy row id.
++     * @return Canonical labels when the id exists.
++     */
++    std::optional<ResolvedCategory> get_taxonomy_entry(int taxonomy_id) const;
+     ResolvedCategory localize_category(const ResolvedCategory& resolved,
+                                        CategoryLanguage language) const;
+     CategorizedFile localize_categorized_file(const CategorizedFile& entry,
+@@ -37,6 +43,27 @@ public:
+                                      CategoryLanguage language,
+                                      const std::string& category,
+                                      const std::string& subcategory);
++    /**
++     * @brief Register a durable user-selected display label for a taxonomy entry.
++     *
++     * The canonical labels identify the taxonomy. The override takes precedence
++     * over the generated translation and applies to future and cached rows.
++     *
++     * @param category Canonical category label.
++     * @param subcategory Canonical subcategory label.
++     * @param language Category language to override.
++     * @param display_category User-facing category label.
++     * @param display_subcategory User-facing subcategory label.
++     */
++    void set_user_label_override(const std::string& category,
++                                 const std::string& subcategory,
++                                 CategoryLanguage language,
++                                 const std::string& display_category,
++                                 const std::string& display_subcategory);
++    /**
++     * @brief Remove all in-memory user display-label overrides.
++     */
++    void clear_user_label_overrides();
+ 
+     bool insert_or_update_file_with_categorization(const std::string& file_name,
+                                                    const std::string& file_type,
+@@ -101,6 +128,12 @@ private:
+ 
+     void initialize_schema();
+     void initialize_taxonomy_schema();
++    /**
++     * @brief Invalidates taxonomy, translation, and non-applied file caches when
++     *        the taxonomy normalization algorithm changes.
++     */
++    void ensure_normalization_cache_version();
++    bool invalidate_normalization_caches();
+     void load_taxonomy_cache();
+     void load_translation_cache();
+     /**
+@@ -141,6 +174,9 @@ private:
+                               const std::string& norm_category,
+                               const std::string& norm_subcategory);
+     const TaxonomyEntry* find_taxonomy_entry(int taxonomy_id) const;
++    std::optional<ResolvedCategory> find_user_label_override(
++        int taxonomy_id,
++        CategoryLanguage language) const;
+ 
+     std::map<std::string, std::string> cached_results;
+     std::string get_cached_category(const std::string &file_name);
+@@ -156,6 +192,7 @@ private:
+     std::unordered_map<int, size_t> taxonomy_index;
+     std::unordered_map<std::string, ResolvedCategory> translation_entries;
+     std::unordered_map<std::string, int> translation_lookup;
++    std::unordered_map<std::string, ResolvedCategory> user_label_overrides_;
+ 
+     static bool is_duplicate_category(
+         const std::vector<std::pair<std::string, std::string>>& results,
+diff --git a/app/include/DatabaseTaxonomyNormalizer.hpp b/app/include/DatabaseTaxonomyNormalizer.hpp
+index 01a4773..19b6a97 100644
+--- a/app/include/DatabaseTaxonomyNormalizer.hpp
++++ b/app/include/DatabaseTaxonomyNormalizer.hpp
+@@ -19,7 +19,7 @@ struct NormalizedCategory {
+ /**
+  * @brief Normalize a category label for taxonomy comparisons.
+  * @param input Display label to normalize.
+- * @return Lowercase alphanumeric label with normalized spacing.
++ * @return Case-folded label with accents folded to base letters and normalized spacing.
+  */
+ std::string normalize_label(const std::string& input);
+ 
+@@ -46,6 +46,23 @@ NormalizedCategory normalize_category(std::string category, std::string subcateg
+  */
+ double string_similarity(const std::string& a, const std::string& b);
+ 
++/**
++ * @brief Check whether a label edit is a small correction of the same label.
++ *
++ * Accent, case, punctuation, and whitespace-only changes always pass. Otherwise
++ * the labels must keep the same word count and first letter, and stay within a
++ * small edit distance. This rejects unrelated replacements such as
++ * "Guas" -> "Esternocleidomastoideo" while allowing "Guas" -> "Guías".
++ *
++ * @param old_label Current display label.
++ * @param new_label Proposed display label.
++ * @param reason Optional output describing why the edit was rejected.
++ * @return True when the edit is a minor correction of the same label.
++ */
++bool is_minor_label_correction(const std::string& old_label,
++                               const std::string& new_label,
++                               std::string* reason = nullptr);
++
+ } // namespace DatabaseTaxonomyNormalizer
+ 
+ #endif // DATABASE_TAXONOMY_NORMALIZER_HPP
+diff --git a/app/include/HeadlessAnalysisCommand.hpp b/app/include/HeadlessAnalysisCommand.hpp
+index 76da480..47d8ab4 100644
+--- a/app/include/HeadlessAnalysisCommand.hpp
++++ b/app/include/HeadlessAnalysisCommand.hpp
+@@ -2,6 +2,7 @@
+ #define HEADLESS_ANALYSIS_COMMAND_HPP
+ 
+ #include "AnalysisRuntimeLock.hpp"
++#include "CategoryLanguage.hpp"
+ #include "HeadlessSettingsOverrides.hpp"
+ 
+ #include <filesystem>
+@@ -42,7 +43,8 @@ public:
+      */
+     enum class RequestMode {
+         Analyze,
+-        ApplyReview
++        ApplyReview,
++        CorrectLabel
+     };
+ 
+     /**
+@@ -70,6 +72,12 @@ public:
+         std::optional<std::filesystem::path> settings_overrides_file;
+         HeadlessSettingsOverrides settings_overrides;
+         std::string job_id;
++        int taxonomy_id{0};
++        CategoryLanguage category_language{CategoryLanguage::English};
++        std::string current_category;
++        std::string current_subcategory;
++        std::string corrected_category;
++        std::string corrected_subcategory;
+     };
+ 
+     /**
+diff --git a/app/include/MainApp.hpp b/app/include/MainApp.hpp
+index 3cdba0d..dddcbed 100644
+--- a/app/include/MainApp.hpp
++++ b/app/include/MainApp.hpp
+@@ -165,6 +165,11 @@ public:
+      * @return Folder path as UTF-8 text.
+      */
+     std::string get_folder_path() const;
++    /**
++     * @brief Returns the destination root for categorized files.
++     * @return Destination path, or the source folder when the field is empty.
++     */
++    std::string get_destination_folder() const;
+     /**
+      * @brief Returns whether the window is running in development mode.
+      * @return True when development-only features are enabled.
+@@ -243,6 +248,10 @@ private:
+      */
+     void schedule_category_language_menu_refresh();
+     void initialize_whitelists();
++    /**
++     * @brief Loads durable user-selected category labels into the database manager.
++     */
++    void load_category_label_overrides();
+     /**
+      * @brief Imports current whitelist labels into the separate user-learning database.
+      */
+@@ -478,6 +487,9 @@ private:
+     AnalysisExclusionRules analysis_exclusion_rules_;
+ 
+     QPointer<QLineEdit> path_entry;
++    QPointer<QLabel> destination_label;
++    QPointer<QLineEdit> destination_entry;
++    QPointer<QPushButton> destination_browse_button;
+     QPointer<QPushButton> analyze_button;
+     QPointer<QPushButton> browse_button;
+     QPointer<QPushButton> exclusion_filter_button;
+diff --git a/app/include/ReviewNameValidator.hpp b/app/include/ReviewNameValidator.hpp
+index 5400177..00c042d 100644
+--- a/app/include/ReviewNameValidator.hpp
++++ b/app/include/ReviewNameValidator.hpp
+@@ -19,6 +19,17 @@ std::string trim_copy(const std::string& value);
+  */
+ bool is_missing_category_label(const std::string& value);
+ 
++/**
++ * @brief Return whether text contains only characters allowed in filenames and folder labels.
++ *
++ * The check is UTF-8 aware: non-ASCII letters and combining marks are allowed, while
++ * control characters and filesystem-reserved ASCII punctuation are rejected.
++ *
++ * @param value Filename or folder label to inspect.
++ * @return True when the text can safely be used as a path component.
++ */
++bool contains_only_allowed_chars(const std::string& value);
++
+ /**
+  * @brief Remove UI prefixes from stored analysis descriptions.
+  * @param value Description text from the review row.
+diff --git a/app/include/Settings.hpp b/app/include/Settings.hpp
+index d178787..37af710 100644
+--- a/app/include/Settings.hpp
++++ b/app/include/Settings.hpp
+@@ -450,6 +450,17 @@ public:
+      */
+     void set_sort_folder(const std::string &path);
+ 
++    /**
++     * @brief Returns the optional destination root for categorized files.
++     * @return Destination folder path, or empty when the source folder is used.
++     */
++    std::string get_destination_folder() const;
++    /**
++     * @brief Sets the optional destination root for categorized files.
++     * @param path Destination folder path; empty keeps files under the source folder.
++     */
++    void set_destination_folder(const std::string& path);
++
+     /**
+      * @brief Returns whether the consistency-pass feature is enabled.
+      * @return True when the consistency pass should be available.
+@@ -797,6 +808,7 @@ private:
+     bool use_whitelist{false};
+     std::string default_sort_folder;
+     std::string sort_folder;
++    std::string destination_folder;
+     std::string skipped_version;
+     std::string whats_new_version_shown;
+     bool show_file_explorer{true};
+diff --git a/app/include/UiTranslator.hpp b/app/include/UiTranslator.hpp
+index 874785c..2d65967 100644
+--- a/app/include/UiTranslator.hpp
++++ b/app/include/UiTranslator.hpp
+@@ -15,6 +15,7 @@ class QActionGroup;
+ 
+ class QDockWidget;
+ class QLabel;
++class QLineEdit;
+ class QMainWindow;
+ class QMenu;
+ class QPushButton;
+@@ -41,6 +42,9 @@ public:
+     struct PrimaryControls {
+         QPointer<QLabel>& path_label;
+         QPointer<QPushButton>& browse_button;
++        QPointer<QLabel>& destination_label;
++        QPointer<QLineEdit>& destination_entry;
++        QPointer<QPushButton>& destination_browse_button;
+         QPointer<QPushButton>& analyze_button;
+         QPointer<QCheckBox>& use_subcategories_checkbox;
+         QPointer<QLabel>& categorization_style_heading;
+diff --git a/app/include/UserLearningStore.hpp b/app/include/UserLearningStore.hpp
+index 8508946..3744148 100644
+--- a/app/include/UserLearningStore.hpp
++++ b/app/include/UserLearningStore.hpp
+@@ -67,6 +67,26 @@ public:
+         std::string source{"user_taxonomy"};
+     };
+ 
++    /**
++     * @brief User-selected display label for an existing taxonomy entry.
++     *
++     * The canonical category/subcategory remain the stable lookup keys; only
++     * the display labels change. Stored in the durable learning database so
++     * clearing the categorization cache does not discard the correction.
++     */
++    struct CategoryLabelOverride {
++        /** @brief Canonical category label, normally English. */
++        std::string category;
++        /** @brief Canonical subcategory label, normally English. */
++        std::string subcategory;
++        /** @brief Category language storage key, for example `spanish`. */
++        std::string language;
++        /** @brief User-facing category label to display. */
++        std::string display_category;
++        /** @brief User-facing subcategory label to display. */
++        std::string display_subcategory;
++    };
++
+     /**
+      * @brief Ranked taxonomy candidate retrieved from learned user data.
+      */
+@@ -171,6 +191,31 @@ public:
+      * @return True when the candidate was stored or already existed.
+      */
+     bool record_taxonomy_candidate(const TaxonomyCandidate& candidate, std::string* error = nullptr);
++    /**
++     * @brief Store a durable display-label correction for an existing taxonomy entry.
++     *
++     * The canonical labels identify the taxonomy; the display labels are what
++     * the review dialog and future categorizations should show.
++     *
++     * @param category Canonical category label.
++     * @param subcategory Canonical subcategory label.
++     * @param language Category language storage key.
++     * @param display_category User-facing category label.
++     * @param display_subcategory User-facing subcategory label.
++     * @param error Optional output for a human-readable failure reason.
++     * @return True when the override was stored successfully.
++     */
++    bool upsert_category_label_override(const std::string& category,
++                                        const std::string& subcategory,
++                                        const std::string& language,
++                                        const std::string& display_category,
++                                        const std::string& display_subcategory,
++                                        std::string* error = nullptr);
++    /**
++     * @brief Load all durable display-label corrections.
++     * @return Stored overrides in insertion order.
++     */
++    std::vector<CategoryLabelOverride> category_label_overrides() const;
+     /**
+      * @brief Import multiple user-owned taxonomy candidates in one transaction.
+      * @param candidates Candidate category/subcategory labels to import.
+diff --git a/app/lib/CategorizationDialog.cpp b/app/lib/CategorizationDialog.cpp
+index b6064c5..62cf31e 100644
+--- a/app/lib/CategorizationDialog.cpp
++++ b/app/lib/CategorizationDialog.cpp
+@@ -3,6 +3,7 @@
+ #include "AppTheme.hpp"
+ #include "BulkEditDialog.hpp"
+ #include "DatabaseManager.hpp"
++#include "DatabaseTaxonomyNormalizer.hpp"
+ #include "LocalFsProvider.hpp"
+ #include "Logger.hpp"
+ #include "MovableCategorizedFile.hpp"
+@@ -58,6 +59,10 @@
+ #include <QJsonDocument>
+ #include <QJsonObject>
+ #include <QDateTime>
++#include <QDialog>
++#include <QDialogButtonBox>
++#include <QFormLayout>
++#include <QLineEdit>
+ 
+ #include <fmt/format.h>
+ 
+@@ -461,6 +466,7 @@ void CategorizationDialog::setup_ui()
+     keep_original_button = new QPushButton(this);
+     keep_original_button->setObjectName(QStringLiteral("aifsKeepOriginalNameButton"));
+     bulk_edit_button = new QPushButton(this);
++    correct_label_button = new QPushButton(this);
+ 
+     select_layout->addWidget(select_all_checkbox);
+     select_layout->addWidget(auto_approve_filenames_checkbox);
+@@ -468,6 +474,7 @@ void CategorizationDialog::setup_ui()
+     select_layout->addWidget(select_highlighted_button);
+     select_layout->addWidget(keep_original_button);
+     select_layout->addWidget(bulk_edit_button);
++    select_layout->addWidget(correct_label_button);
+     select_layout->addStretch(1);
+     scroll_layout->addLayout(select_layout);
+ 
+@@ -607,6 +614,7 @@ void CategorizationDialog::setup_ui()
+     connect(select_highlighted_button, &QPushButton::clicked, this, &CategorizationDialog::on_select_highlighted_clicked);
+     connect(keep_original_button, &QPushButton::clicked, this, &CategorizationDialog::on_keep_original_names_clicked);
+     connect(bulk_edit_button, &QPushButton::clicked, this, &CategorizationDialog::on_bulk_edit_clicked);
++    connect(correct_label_button, &QPushButton::clicked, this, &CategorizationDialog::on_correct_label_clicked);
+     connect(model, &QStandardItemModel::itemChanged, this, &CategorizationDialog::on_item_changed);
+     connect(table_view, &QTableView::doubleClicked, this, &CategorizationDialog::on_table_double_clicked);
+     connect(show_subcategories_checkbox, &QCheckBox::toggled,
+@@ -626,6 +634,7 @@ void CategorizationDialog::setup_ui()
+                 this,
+                 [this]() {
+                     update_preview_button_state();
++                    update_correct_label_button_state();
+                     update_path_detail();
+                 });
+     }
+@@ -996,6 +1005,7 @@ void CategorizationDialog::populate_model()
+     }
+     update_select_all_state();
+     update_preview_button_state();
++    update_correct_label_button_state();
+ }
+ 
+ void CategorizationDialog::update_type_icon(QStandardItem* item)
+@@ -1281,79 +1291,8 @@ void CategorizationDialog::on_confirm_and_sort_button_clicked()
+ 
+     std::vector<std::string> files_not_moved;
+     ScopedFlag guard(suppress_item_changed_);
+-    if (include_subdirectories_) {
+-        struct CollisionState {
+-            std::unordered_set<std::string> used_names;
+-            std::unordered_map<std::string, int> next_index;
+-        };
+-        std::unordered_map<std::string, CollisionState> collisions;
+-        collisions.reserve(static_cast<size_t>(model->rowCount()));
+-
+-        for (int row_index = 0; row_index < model->rowCount(); ++row_index) {
+-            auto* select_item = model->item(row_index, ColumnSelect);
+-            if (select_item && select_item->checkState() != Qt::Checked) {
+-                continue;
+-            }
+-            auto* file_item = model->item(row_index, ColumnFile);
+-            auto* category_item = model->item(row_index, ColumnCategory);
+-            auto* subcategory_item = model->item(row_index, ColumnSubcategory);
+-            auto* rename_item = model->item(row_index, ColumnSuggestedName);
+-            if (!file_item || !category_item) {
+-                continue;
+-            }
+-
+-            bool rename_only = false;
+-            bool used_consistency_hints = false;
+-            FileType file_type = FileType::File;
+-            if (!resolve_row_flags(row_index, rename_only, used_consistency_hints, file_type)) {
+-                continue;
+-            }
+-            (void)used_consistency_hints;
+-            if (rename_only) {
+-                continue;
+-            }
+-
+-            std::string category = read_item_or_hidden_text(category_item, kHiddenCategoryRole);
+-            if (is_missing_category_label(category)) {
+-                continue;
+-            }
+-            std::string subcategory = read_item_or_hidden_text(subcategory_item, kHiddenSubcategoryRole);
+-            if (is_missing_category_label(subcategory)) {
+-                subcategory.clear();
+-            }
+-
+-            const std::string file_name = file_item->text().toStdString();
+-            const std::string rename_candidate = effective_rename_candidate(row_index);
+-            std::string source_dir = file_item->data(kFilePathRole).toString().toStdString();
+-            if (source_dir.empty()) {
+-                source_dir = base_dir;
+-            }
+-
+-            CategorizedFile file;
+-            file.file_path = source_dir;
+-            file.file_name = file_name;
+-            file.type = file_type;
+-            file.category = category;
+-            file.subcategory = subcategory;
+-            file.rename_only = false;
+-
+-            const auto target_dir = build_suggested_target_dir(file, base_dir, show_subcategory_column);
+-            const std::string dir_key = Utils::path_to_utf8(target_dir);
+-            auto& state = collisions[dir_key];
+-            const std::string desired_name = resolve_destination_name(file_name, rename_candidate);
+-            const std::string unique_name = build_unique_move_name(desired_name,
+-                                                                   target_dir,
+-                                                                   state.used_names,
+-                                                                   state.next_index);
+-            state.used_names.insert(to_lower_copy_str(unique_name));
+-            if (unique_name != desired_name && row_rename_accepted(row_index)) {
+-                if (rename_item) {
+-                    rename_item->setText(QString::fromStdString(unique_name));
+-                }
+-                update_preview_column(row_index);
+-            }
+-        }
+-    }
++    MoveCollisionMap collisions;
++    collisions.reserve(static_cast<size_t>(model->rowCount()));
+ 
+     for (int row_index = 0; row_index < model->rowCount(); ++row_index) {
+         auto* select_item = model->item(row_index, ColumnSelect);
+@@ -1395,6 +1334,7 @@ void CategorizationDialog::on_confirm_and_sort_button_clicked()
+                             subcategory,
+                             source_dir,
+                             base_dir,
++                            collisions,
+                             files_not_moved,
+                             file_type,
+                             rename_only,
+@@ -1449,12 +1389,7 @@ void CategorizationDialog::on_confirm_and_sort_button_clicked()
+ #endif
+             if (rename_images_only_active) {
+                 to_label = rec->destination_file_name;
+-                if (!base_dir.empty()) {
+-                    destination = Utils::path_to_utf8(
+-                        Utils::utf8_to_path(base_dir) / Utils::utf8_to_path(rec->destination_file_name));
+-                } else {
+-                    destination = rec->destination;
+-                }
++                destination = rec->destination;
+             } else if (rec->rename_only) {
+                 to_label = rec->destination_file_name;
+                 destination = rec->destination;
+@@ -1514,14 +1449,15 @@ void CategorizationDialog::handle_selected_row(int row_index,
+                                                const std::string& subcategory,
+                                                const std::string& source_dir,
+                                                const std::string& base_dir,
++                                               MoveCollisionMap& collisions,
+                                                std::vector<std::string>& files_not_moved,
+                                                FileType file_type,
+                                                bool rename_only,
+                                                bool used_consistency_hints,
+                                                bool dry_run)
+ {
+-    const std::string destination_name = resolve_destination_name(file_name, rename_candidate);
+-    const bool rename_active = destination_name != file_name;
++    std::string destination_name = resolve_destination_name(file_name, rename_candidate);
++    bool rename_active = destination_name != file_name;
+     const bool rename_accepted = row_rename_accepted(row_index);
+     auto* category_item_ref = model ? model->item(row_index, ColumnCategory) : nullptr;
+     auto* subcategory_item_ref = model ? model->item(row_index, ColumnSubcategory) : nullptr;
+@@ -1584,6 +1520,9 @@ void CategorizationDialog::handle_selected_row(int row_index,
+             return;
+         }
+ 
++        destination_name = unique_destination_name(destination_name, source_dir, collisions);
++        rename_active = destination_name != file_name;
++
+         const auto source_path = Utils::utf8_to_path(source_dir) / Utils::utf8_to_path(file_name);
+         const auto dest_path = Utils::utf8_to_path(source_dir) / Utils::utf8_to_path(destination_name);
+ 
+@@ -1703,6 +1642,17 @@ void CategorizationDialog::handle_selected_row(int row_index,
+         return;
+     }
+ 
++    CategorizedFile target_file;
++    target_file.file_path = source_dir;
++    target_file.category = category;
++    target_file.subcategory = effective_subcategory;
++    target_file.type = file_type;
++    const auto target_dir = ReviewFileNaming::build_suggested_target_dir(
++        target_file, base_dir, show_subcategory_column);
++    destination_name = unique_destination_name(
++        destination_name, Utils::path_to_utf8(target_dir), collisions);
++    rename_active = destination_name != file_name;
++
+     try {
+         MovableCategorizedFile categorized_file(
+             *storage_provider_, source_dir, base_dir, category, effective_subcategory, file_name, destination_name);
+@@ -1782,7 +1732,7 @@ void CategorizationDialog::handle_selected_row(int row_index,
+                     : db_manager->resolve_category_for_language(category,
+                                                                 effective_subcategory,
+                                                                 category_language_);
+-                const std::string source_db_dir = include_subdirectories_ ? source_dir : base_dir;
++                const std::string source_db_dir = source_dir;
+                 std::string destination_db_dir = base_dir;
+                 if (include_subdirectories_) {
+                     const auto dest_parent = Utils::utf8_to_path(preview_paths.destination).parent_path();
+@@ -2250,6 +2200,13 @@ bool CategorizationDialog::move_file_back(const std::string& source, const std::
+                            source,
+                            undo_result.message.empty() ? "unknown error" : undo_result.message);
+     }
++    if (undo_result.success && !base_dir_.empty()) {
++        // Storage providers clean up empty parent folders after undo. Recreate
++        // the configured destination root so a separate destination survives
++        // undoing its last moved file.
++        std::error_code ec;
++        std::filesystem::create_directories(Utils::utf8_to_path(base_dir_), ec);
++    }
+     return undo_result.success;
+ }
+ 
+@@ -2447,6 +2404,235 @@ void CategorizationDialog::on_bulk_edit_clicked()
+     }
+ }
+ 
++void CategorizationDialog::update_correct_label_button_state()
++{
++    if (!correct_label_button) {
++        return;
++    }
++
++    bool enabled = false;
++    if (model && table_view &&
++        category_language_ != CategoryLanguage::English &&
++        !table_view->isColumnHidden(ColumnCategory)) {
++        const auto rows = selected_row_indices();
++        if (rows.size() == 1) {
++            const auto* category_item = model->item(rows.front(), ColumnCategory);
++            enabled = category_item && !category_item->text().trimmed().isEmpty();
++        }
++    }
++    correct_label_button->setEnabled(enabled);
++}
++
++void CategorizationDialog::on_correct_label_clicked()
++{
++    if (!model || !table_view || !db_manager) {
++        return;
++    }
++    if (category_language_ == CategoryLanguage::English) {
++        QMessageBox::information(this,
++                                 tr("Label correction unavailable"),
++                                 tr("Label corrections are only available when the category language is not English."));
++        return;
++    }
++    if (!learning_store_) {
++        QMessageBox::warning(this,
++                             tr("Label correction unavailable"),
++                             tr("The user learning store is not available."));
++        return;
++    }
++
++    const auto rows = selected_row_indices();
++    if (rows.size() != 1) {
++        QMessageBox::information(this,
++                                 tr("Select one row"),
++                                 tr("Select exactly one row whose category label you want to correct."));
++        return;
++    }
++
++    const int row = rows.front();
++    auto* category_item = model->item(row, ColumnCategory);
++    auto* subcategory_item = model->item(row, ColumnSubcategory);
++    if (!category_item) {
++        return;
++    }
++
++    const auto read_item_text = [](QStandardItem* item, int hidden_role) {
++        if (!item) {
++            return std::string();
++        }
++        const QString hidden = item->data(hidden_role).toString();
++        return (hidden.isEmpty() ? item->text() : hidden).toStdString();
++    };
++    const std::string old_category = read_item_text(category_item, kHiddenCategoryRole);
++    const std::string old_subcategory = read_item_text(subcategory_item, kHiddenSubcategoryRole);
++    if (old_category.empty()) {
++        QMessageBox::information(this,
++                                 tr("No category label"),
++                                 tr("The selected row has no category label to correct."));
++        return;
++    }
++
++    std::string canonical_category =
++        category_item->data(kCanonicalCategoryRole).toString().toStdString();
++    std::string canonical_subcategory = subcategory_item
++        ? subcategory_item->data(kCanonicalSubcategoryRole).toString().toStdString()
++        : std::string();
++    if (canonical_category.empty()) {
++        const auto resolved = db_manager->resolve_category_for_language(old_category,
++                                                                        old_subcategory,
++                                                                        category_language_);
++        canonical_category = resolved.category;
++        canonical_subcategory = resolved.subcategory;
++    }
++    const auto canonical = db_manager->resolve_category(canonical_category, canonical_subcategory);
++    if (canonical.taxonomy_id <= 0 || canonical.category.empty()) {
++        QMessageBox::warning(this,
++                             tr("Category not found"),
++                             tr("The selected row is not linked to a reusable taxonomy entry."));
++        return;
++    }
++    canonical_category = canonical.category;
++    canonical_subcategory = canonical.subcategory;
++
++    QDialog dialog(this);
++    dialog.setWindowTitle(tr("Correct category label"));
++    auto* layout = new QVBoxLayout(&dialog);
++    auto* explanation = new QLabel(
++        tr("This changes the label for every file in \"%1 / %2\".\n"
++           "It does not move or reclassify files. Use \"Edit selected...\" for that.")
++            .arg(QString::fromStdString(old_category),
++                 QString::fromStdString(old_subcategory)),
++        &dialog);
++    explanation->setWordWrap(true);
++    layout->addWidget(explanation);
++
++    auto* form = new QFormLayout();
++    auto* category_edit = new QLineEdit(QString::fromStdString(old_category), &dialog);
++    auto* subcategory_edit = new QLineEdit(QString::fromStdString(old_subcategory), &dialog);
++    category_edit->selectAll();
++    form->addRow(tr("Category:"), category_edit);
++    form->addRow(tr("Subcategory:"), subcategory_edit);
++    layout->addLayout(form);
++
++    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
++    connect(buttons, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
++    connect(buttons, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
++    layout->addWidget(buttons);
++
++    while (dialog.exec() == QDialog::Accepted) {
++        const std::string new_category = category_edit->text().trimmed().toStdString();
++        const std::string new_subcategory = subcategory_edit->text().trimmed().toStdString();
++
++        std::string category_reason;
++        std::string subcategory_reason;
++        if (!DatabaseTaxonomyNormalizer::is_minor_label_correction(
++                old_category, new_category, &category_reason) ||
++            !DatabaseTaxonomyNormalizer::is_minor_label_correction(
++                old_subcategory, new_subcategory, &subcategory_reason)) {
++            QMessageBox::warning(
++                &dialog,
++                tr("Not a label correction"),
++                tr("This looks like a different category or subcategory, not a small label correction.\n\n"
++                   "Use \"Edit selected...\" to reclassify files."));
++            continue;
++        }
++        if (new_category == old_category && new_subcategory == old_subcategory) {
++            return;
++        }
++
++        const std::string display_subcategory =
++            new_subcategory.empty() ? canonical_subcategory : new_subcategory;
++        const auto answer = QMessageBox::question(
++            this,
++            tr("Apply label correction?"),
++            tr("Change the label for all \"%1 / %2\" entries from \"%3 / %4\" to \"%5 / %6\"?")
++                .arg(QString::fromStdString(canonical_category),
++                     QString::fromStdString(canonical_subcategory),
++                     QString::fromStdString(old_category),
++                     QString::fromStdString(old_subcategory),
++                     QString::fromStdString(new_category),
++                     QString::fromStdString(display_subcategory)),
++            QMessageBox::Yes | QMessageBox::No,
++            QMessageBox::No);
++        if (answer != QMessageBox::Yes) {
++            continue;
++        }
++
++        std::string error;
++        if (!learning_store_->upsert_category_label_override(canonical_category,
++                                                              canonical_subcategory,
++                                                              categoryLanguageDisplay(category_language_),
++                                                              new_category,
++                                                              display_subcategory,
++                                                              &error)) {
++            QMessageBox::warning(&dialog,
++                                 tr("Could not save label correction"),
++                                 tr("Failed to save the label correction: %1")
++                                     .arg(QString::fromStdString(error)));
++            continue;
++        }
++
++        db_manager->set_user_label_override(canonical_category,
++                                            canonical_subcategory,
++                                            category_language_,
++                                            new_category,
++                                            display_subcategory);
++
++        const std::string normalized_canonical_category =
++            DatabaseTaxonomyNormalizer::normalize_label(canonical_category);
++        const std::string normalized_canonical_subcategory =
++            DatabaseTaxonomyNormalizer::normalize_label(canonical_subcategory);
++        {
++            ScopedFlag guard(suppress_item_changed_);
++            for (int current_row = 0; current_row < model->rowCount(); ++current_row) {
++                auto* current_category_item = model->item(current_row, ColumnCategory);
++                auto* current_subcategory_item = model->item(current_row, ColumnSubcategory);
++                const std::string row_canonical_category = current_category_item
++                    ? current_category_item->data(kCanonicalCategoryRole).toString().toStdString()
++                    : std::string();
++                const std::string row_canonical_subcategory = current_subcategory_item
++                    ? current_subcategory_item->data(kCanonicalSubcategoryRole).toString().toStdString()
++                    : std::string();
++                if (DatabaseTaxonomyNormalizer::normalize_label(row_canonical_category) !=
++                        normalized_canonical_category ||
++                    DatabaseTaxonomyNormalizer::normalize_label(row_canonical_subcategory) !=
++                        normalized_canonical_subcategory) {
++                    continue;
++                }
++                if (current_category_item) {
++                    current_category_item->setText(QString::fromStdString(new_category));
++                    current_category_item->setData(QString::fromStdString(new_category),
++                                                   kOriginalCategoryRole);
++                    if (current_category_item->data(kHiddenCategoryRole).isValid()) {
++                        current_category_item->setData(QString::fromStdString(new_category),
++                                                       kHiddenCategoryRole);
++                    }
++                }
++                if (current_subcategory_item) {
++                    current_subcategory_item->setText(QString::fromStdString(display_subcategory));
++                    current_subcategory_item->setData(QString::fromStdString(display_subcategory),
++                                                      kOriginalSubcategoryRole);
++                    if (current_subcategory_item->data(kHiddenSubcategoryRole).isValid()) {
++                        current_subcategory_item->setData(QString::fromStdString(display_subcategory),
++                                                          kHiddenSubcategoryRole);
++                    }
++                }
++                update_preview_column(current_row);
++            }
++        }
++        update_path_detail();
++        update_correct_label_button_state();
++        if (core_logger) {
++            core_logger->info("Corrected category label '{} / {}' to '{} / {}'",
++                              canonical_category,
++                              canonical_subcategory,
++                              new_category,
++                              display_subcategory);
++        }
++        return;
++    }
++}
++
+ void CategorizationDialog::on_show_subcategories_toggled(bool checked)
+ {
+     show_subcategory_column = checked;
+@@ -2654,6 +2840,9 @@ void CategorizationDialog::apply_category_visibility()
+         if (bulk_edit_button) {
+             bulk_edit_button->setEnabled(show_category_column);
+         }
++        if (correct_label_button) {
++            update_correct_label_button_state();
++        }
+         if (model) {
+             auto update_item = [](QStandardItem* item, int role, bool hide) {
+                 if (!item) {
+@@ -2942,6 +3131,27 @@ CategorizationDialog::build_preview_record_for_row(int row, std::string* debug_r
+     }
+ }
+ 
++std::string CategorizationDialog::unique_destination_name(
++    const std::string& desired_name,
++    const std::string& target_dir,
++    MoveCollisionMap& collisions) const
++{
++    if (target_dir.empty()) {
++        return desired_name;
++    }
++
++    const std::string dir_key = Utils::path_to_utf8(
++        Utils::utf8_to_path(target_dir).lexically_normal());
++    auto& state = collisions[dir_key];
++    const std::string unique_name = ReviewFileNaming::build_unique_move_name(
++        desired_name,
++        Utils::utf8_to_path(target_dir),
++        state.used_names,
++        state.next_index);
++    state.used_names.insert(ReviewFileNaming::to_lower_copy_str(unique_name));
++    return unique_name;
++}
++
+ std::string CategorizationDialog::resolve_destination_name(const std::string& original_name,
+                                                            const std::string& rename_candidate) const
+ {
+@@ -3142,6 +3352,7 @@ void CategorizationDialog::retranslate_ui()
+     set_text_if(select_highlighted_button, tr("Select highlighted"));
+     set_text_if(keep_original_button, tr("Keep original name"));
+     set_text_if(bulk_edit_button, tr("Edit selected..."));
++    set_text_if(correct_label_button, tr("Correct label..."));
+     set_text_if(show_subcategories_checkbox, tr("Create subcategory folders"));
+     set_text_if(dry_run_checkbox, tr("Dry run (preview only, do not move files)"));
+     set_text_if(rename_images_only_checkbox, tr("Do not categorize picture files (only rename)"));
+@@ -3170,6 +3381,11 @@ void CategorizationDialog::retranslate_ui()
+     if (bulk_edit_button) {
+         bulk_edit_button->setToolTip(tr("Apply category/subcategory values to highlighted rows."));
+     }
++    if (correct_label_button) {
++        correct_label_button->setToolTip(
++            tr("Correct a typo or accent in the category label for every file in that category. "
++               "This does not reclassify files; use Edit selected... for that."));
++    }
+ 
+     if (model) {
+         model->setHorizontalHeaderLabels(QStringList{
+@@ -3376,11 +3592,14 @@ void CategorizationDialog::set_show_rename_column(bool enabled)
+     apply_rename_visibility();
+ }
+ #ifdef AI_FILE_SORTER_TEST_BUILD
+-void CategorizationDialog::test_set_entries(const std::vector<CategorizedFile>& files) {
++void CategorizationDialog::test_set_entries(const std::vector<CategorizedFile>& files,
++                                             const std::string& base_dir_override) {
+     categorized_files = files;
+     include_subdirectories_ = false;
+     base_dir_.clear();
+-    if (!categorized_files.empty()) {
++    if (!base_dir_override.empty()) {
++        base_dir_ = base_dir_override;
++    } else if (!categorized_files.empty()) {
+         base_dir_ = categorized_files.front().file_path;
+     }
+     ensure_unique_suggested_names(categorized_files, base_dir_, show_subcategory_column);
+diff --git a/app/lib/CategorizationResponseParser.cpp b/app/lib/CategorizationResponseParser.cpp
+index 98fac0d..8837aef 100644
+--- a/app/lib/CategorizationResponseParser.cpp
++++ b/app/lib/CategorizationResponseParser.cpp
+@@ -1,5 +1,6 @@
+ #include "CategorizationResponseParser.hpp"
+ 
++#include "ReviewNameValidator.hpp"
+ #include "Utils.hpp"
+ 
+ #if __has_include(<jsoncpp/json/json.h>)
+@@ -542,16 +543,7 @@ bool split_inline_pair(const std::string& line, std::string& category, std::stri
+ 
+ bool contains_only_allowed_chars(const std::string& value)
+ {
+-    for (unsigned char ch : value) {
+-        if (std::iscntrl(ch)) {
+-            return false;
+-        }
+-        static const std::string forbidden = R"(<>:"/\|?*)";
+-        if (forbidden.find(static_cast<char>(ch)) != std::string::npos) {
+-            return false;
+-        }
+-    }
+-    return true;
++    return ReviewNameValidator::contains_only_allowed_chars(value);
+ }
+ 
+ bool has_leading_or_trailing_space_or_dot(const std::string& value)
+diff --git a/app/lib/CategorizationService.cpp b/app/lib/CategorizationService.cpp
+index 7019565..a281579 100644
+--- a/app/lib/CategorizationService.cpp
++++ b/app/lib/CategorizationService.cpp
+@@ -1758,6 +1758,8 @@ std::optional<DatabaseManager::ResolvedCategory> CategorizationService::translat
+         "- No parentheses.\n"
+         "- No explanations.\n"
+         "- No trailing periods.\n"
++        "- Preserve the target language's standard spelling, accents, and ñ.\n"
++        "- Never strip, replace, or simplify accented characters.\n"
+         "- Keep the main category broad and concise.\n"
+         "- Keep the subcategory specific and concise.\n\n"
+         "category: {}\n"
+diff --git a/app/lib/DatabaseManager.cpp b/app/lib/DatabaseManager.cpp
+index 2b51720..41328da 100644
+--- a/app/lib/DatabaseManager.cpp
++++ b/app/lib/DatabaseManager.cpp
+@@ -7,6 +7,7 @@
+ #include <algorithm>
+ #include <cctype>
+ #include <cstdio>
++#include <cstdlib>
+ #include <iostream>
+ #include <memory>
+ #include <optional>
+@@ -19,7 +20,12 @@
+ #include <spdlog/fmt/fmt.h>
+ 
+ namespace {
+-constexpr double kSimilarityThreshold = 0.85;
++// Keep fuzzy matching for plural/typo variants, but do not let a dropped
++// accented vowel (for example "peliculas" vs "pelculas") collapse two
++// labels that are meant to remain distinct.
++constexpr double kSimilarityThreshold = 0.90;
++constexpr int kTaxonomyNormalizationVersion = 2;
++constexpr char kTaxonomyNormalizationVersionKey[] = "taxonomy_normalization_version";
+ constexpr char kLegacyMusicCategoryNormalized[] = "music";
+ constexpr char kCanonicalAudioCategoryDisplay[] = "Audio";
+ constexpr char kLegacyInstallerBuildersNormalized[] = "installer builders";
+@@ -262,6 +268,7 @@ DatabaseManager::DatabaseManager(std::string config_dir)
+ 
+     initialize_schema();
+     initialize_taxonomy_schema();
++    ensure_normalization_cache_version();
+     load_taxonomy_cache();
+     if (migrate_legacy_taxonomy_labels()) {
+         load_taxonomy_cache();
+@@ -303,6 +310,17 @@ void DatabaseManager::initialize_schema() {
+         sqlite3_free(error_msg);
+     }
+ 
++    const char* metadata_table_sql = R"(
++        CREATE TABLE IF NOT EXISTS cache_metadata (
++            key TEXT PRIMARY KEY,
++            value TEXT NOT NULL
++        );
++    )";
++    if (sqlite3_exec(db, metadata_table_sql, nullptr, nullptr, &error_msg) != SQLITE_OK) {
++        db_log(spdlog::level::err, "Failed to create cache metadata table: {}", error_msg);
++        sqlite3_free(error_msg);
++    }
++
+     const char *add_column_sql = "ALTER TABLE file_categorization ADD COLUMN taxonomy_id INTEGER;";
+     if (sqlite3_exec(db, add_column_sql, nullptr, nullptr, &error_msg) != SQLITE_OK) {
+         if (!is_duplicate_column_error(error_msg)) {
+@@ -434,6 +452,124 @@ void DatabaseManager::initialize_taxonomy_schema() {
+     }
+ }
+ 
++void DatabaseManager::ensure_normalization_cache_version()
++{
++    if (!db) {
++        return;
++    }
++
++    int stored_version = 0;
++    bool has_stored_version = false;
++    sqlite3_stmt* stmt = nullptr;
++    const char* select_version_sql =
++        "SELECT value FROM cache_metadata WHERE key = ? LIMIT 1;";
++    if (sqlite3_prepare_v2(db, select_version_sql, -1, &stmt, nullptr) == SQLITE_OK) {
++        sqlite3_bind_text(stmt, 1, kTaxonomyNormalizationVersionKey, -1, SQLITE_STATIC);
++        if (sqlite3_step(stmt) == SQLITE_ROW) {
++            const auto* value = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
++            stored_version = value ? std::atoi(value) : 0;
++            has_stored_version = true;
++        }
++    }
++    if (stmt) {
++        sqlite3_finalize(stmt);
++        stmt = nullptr;
++    }
++
++    if (has_stored_version && stored_version >= kTaxonomyNormalizationVersion) {
++        return;
++    }
++
++    if (!has_stored_version) {
++        bool has_cache_rows = false;
++        const char* count_cache_sql =
++            "SELECT (SELECT COUNT(*) FROM category_taxonomy) + "
++            "(SELECT COUNT(*) FROM category_translation) + "
++            "(SELECT COUNT(*) FROM file_categorization);";
++        if (sqlite3_prepare_v2(db, count_cache_sql, -1, &stmt, nullptr) == SQLITE_OK) {
++            if (sqlite3_step(stmt) == SQLITE_ROW) {
++                has_cache_rows = sqlite3_column_int(stmt, 0) > 0;
++            }
++        }
++        if (stmt) {
++            sqlite3_finalize(stmt);
++            stmt = nullptr;
++        }
++        if (has_cache_rows && !invalidate_normalization_caches()) {
++            db_log(spdlog::level::err,
++                   "Failed to invalidate caches for taxonomy normalization version {}.",
++                   kTaxonomyNormalizationVersion);
++            return;
++        }
++    } else if (!invalidate_normalization_caches()) {
++        db_log(spdlog::level::err,
++               "Failed to invalidate caches for taxonomy normalization version {} (stored {}).",
++               kTaxonomyNormalizationVersion,
++               stored_version);
++        return;
++    }
++
++    const char* set_version_sql =
++        "INSERT INTO cache_metadata(key, value) VALUES(?, ?) "
++        "ON CONFLICT(key) DO UPDATE SET value = excluded.value;";
++    if (sqlite3_prepare_v2(db, set_version_sql, -1, &stmt, nullptr) != SQLITE_OK) {
++        db_log(spdlog::level::err,
++               "Failed to prepare taxonomy normalization version update: {}",
++               sqlite3_errmsg(db));
++        return;
++    }
++    const std::string version = std::to_string(kTaxonomyNormalizationVersion);
++    sqlite3_bind_text(stmt, 1, kTaxonomyNormalizationVersionKey, -1, SQLITE_STATIC);
++    sqlite3_bind_text(stmt, 2, version.c_str(), -1, SQLITE_TRANSIENT);
++    if (sqlite3_step(stmt) != SQLITE_DONE) {
++        db_log(spdlog::level::err,
++               "Failed to store taxonomy normalization version {}: {}",
++               kTaxonomyNormalizationVersion,
++               sqlite3_errmsg(db));
++    }
++    sqlite3_finalize(stmt);
++}
++
++bool DatabaseManager::invalidate_normalization_caches()
++{
++    if (!db) {
++        return false;
++    }
++
++    const char* sql = R"(
++        BEGIN IMMEDIATE TRANSACTION;
++        UPDATE file_categorization SET taxonomy_id = NULL
++            WHERE IFNULL(rename_applied, 0) != 0;
++        DELETE FROM category_translation;
++        DELETE FROM category_alias;
++        DELETE FROM category_taxonomy;
++        DELETE FROM file_categorization WHERE IFNULL(rename_applied, 0) = 0;
++        COMMIT;
++    )";
++
++    char* error_msg = nullptr;
++    if (sqlite3_exec(db, sql, nullptr, nullptr, &error_msg) != SQLITE_OK) {
++        db_log(spdlog::level::err,
++               "Failed to invalidate normalization caches: {}",
++               error_msg ? error_msg : sqlite3_errmsg(db));
++        if (error_msg) {
++            sqlite3_free(error_msg);
++        }
++        sqlite3_exec(db, "ROLLBACK;", nullptr, nullptr, nullptr);
++        return false;
++    }
++
++    taxonomy_entries.clear();
++    canonical_lookup.clear();
++    alias_lookup.clear();
++    taxonomy_index.clear();
++    translation_entries.clear();
++    translation_lookup.clear();
++    cached_results.clear();
++    db_log(spdlog::level::info, "Invalidated categorization caches for taxonomy normalization version {}.", kTaxonomyNormalizationVersion);
++    return true;
++}
++
+ void DatabaseManager::load_taxonomy_cache() {
+     taxonomy_entries.clear();
+     canonical_lookup.clear();
+@@ -934,10 +1070,12 @@ std::pair<int, double> DatabaseManager::find_fuzzy_match(
+     double best_score = 0.0;
+     int best_id = -1;
+     for (const auto &entry : taxonomy_entries) {
+-        double category_score = string_similarity(norm_category, entry.normalized_category);
+-        double subcategory_score =
++        const double category_score = string_similarity(norm_category, entry.normalized_category);
++        const double subcategory_score =
+             string_similarity(norm_subcategory, entry.normalized_subcategory);
+-        double combined = (category_score + subcategory_score) / 2.0;
++        // Require both labels to be close. Averaging let an exact subcategory
++        // rescue a category missing an accented vowel (for example Musica/Msica).
++        const double combined = std::min(category_score, subcategory_score);
+         if (combined > best_score) {
+             best_score = combined;
+             best_id = entry.id;
+@@ -1080,6 +1218,18 @@ DatabaseManager::resolve_category_for_language(const std::string& category,
+     return resolve_category(category, subcategory);
+ }
+ 
++std::optional<DatabaseManager::ResolvedCategory>
++DatabaseManager::get_taxonomy_entry(int taxonomy_id) const {
++    if (taxonomy_id <= 0) {
++        return std::nullopt;
++    }
++    const auto* entry = find_taxonomy_entry(taxonomy_id);
++    if (!entry) {
++        return std::nullopt;
++    }
++    return ResolvedCategory{entry->id, entry->category, entry->subcategory};
++}
++
+ std::optional<DatabaseManager::ResolvedCategory>
+ DatabaseManager::get_category_translation(int taxonomy_id,
+                                           CategoryLanguage language) const {
+@@ -1099,6 +1249,9 @@ DatabaseManager::localize_category(const ResolvedCategory& resolved,
+     if (language == CategoryLanguage::English || resolved.taxonomy_id <= 0) {
+         return resolved;
+     }
++    if (const auto overridden = find_user_label_override(resolved.taxonomy_id, language)) {
++        return *overridden;
++    }
+     if (const auto translated = get_category_translation(resolved.taxonomy_id, language)) {
+         return *translated;
+     }
+@@ -1117,6 +1270,11 @@ CategorizedFile DatabaseManager::localize_categorized_file(const CategorizedFile
+     if (localized.canonical_subcategory.empty()) {
+         localized.canonical_subcategory = entry.subcategory;
+     }
++    if (const auto overridden = find_user_label_override(entry.taxonomy_id, language)) {
++        localized.category = overridden->category;
++        localized.subcategory = overridden->subcategory;
++        return localized;
++    }
+     if (const auto translated = get_category_translation(entry.taxonomy_id, language)) {
+         localized.category = translated->category;
+         localized.subcategory = translated->subcategory;
+@@ -1124,6 +1282,53 @@ CategorizedFile DatabaseManager::localize_categorized_file(const CategorizedFile
+     return localized;
+ }
+ 
++void DatabaseManager::set_user_label_override(const std::string& category,
++                                              const std::string& subcategory,
++                                              CategoryLanguage language,
++                                              const std::string& display_category,
++                                              const std::string& display_subcategory) {
++    if (language == CategoryLanguage::English || category.empty() || display_category.empty()) {
++        return;
++    }
++
++    const std::string normalized_category = normalize_label(category);
++    std::string normalized_subcategory = normalize_label(subcategory);
++    if (normalized_subcategory.empty()) {
++        normalized_subcategory = "general";
++    }
++    if (normalized_category.empty()) {
++        return;
++    }
++
++    user_label_overrides_[make_translation_lookup_key(language,
++                                                       normalized_category,
++                                                       normalized_subcategory)] =
++        ResolvedCategory{-1, display_category, display_subcategory};
++}
++
++void DatabaseManager::clear_user_label_overrides() {
++    user_label_overrides_.clear();
++}
++
++std::optional<DatabaseManager::ResolvedCategory>
++DatabaseManager::find_user_label_override(int taxonomy_id,
++                                          CategoryLanguage language) const {
++    if (language == CategoryLanguage::English || taxonomy_id <= 0) {
++        return std::nullopt;
++    }
++
++    const auto* entry = find_taxonomy_entry(taxonomy_id);
++    if (!entry) {
++        return std::nullopt;
++    }
++    const auto it = user_label_overrides_.find(make_translation_lookup_key(
++        language, entry->normalized_category, entry->normalized_subcategory));
++    if (it == user_label_overrides_.end()) {
++        return std::nullopt;
++    }
++    return ResolvedCategory{entry->id, it->second.category, it->second.subcategory};
++}
++
+ bool DatabaseManager::upsert_category_translation(int taxonomy_id,
+                                                   CategoryLanguage language,
+                                                   const std::string& category,
+diff --git a/app/lib/DatabaseTaxonomyNormalizer.cpp b/app/lib/DatabaseTaxonomyNormalizer.cpp
+index d8cd8e9..dfe8dca 100644
+--- a/app/lib/DatabaseTaxonomyNormalizer.cpp
++++ b/app/lib/DatabaseTaxonomyNormalizer.cpp
+@@ -1,5 +1,8 @@
+ #include "DatabaseTaxonomyNormalizer.hpp"
+ 
++#include <QChar>
++#include <QString>
++
+ #include <algorithm>
+ #include <cctype>
+ #include <optional>
+@@ -337,29 +340,39 @@ CanonicalCategoryLabel canonicalize_category_label(const std::string& normalized
+ 
+ std::string normalize_label(const std::string& input)
+ {
+-    std::string result;
+-    result.reserve(input.size());
+-
+-    bool last_was_space = true;
+-    for (unsigned char ch : input) {
+-        if (std::isalnum(ch)) {
+-            result.push_back(static_cast<char>(std::tolower(ch)));
+-            last_was_space = false;
+-        } else if (std::isspace(ch)) {
+-            if (!last_was_space) {
+-                result.push_back(' ');
+-                last_was_space = true;
+-            }
++    const QString text = QString::fromUtf8(input.data(), static_cast<int>(input.size()));
++    if (text.isEmpty()) {
++        return {};
++    }
++
++    // Decompose first so accents become a base letter plus a combining mark.
++    // Dropping the mark folds "Películas" to "peliculas" instead of deleting
++    // the accented vowel and producing "pelculas" (which collided with the
++    // separate, misspelled label "Pelculas").
++    const QString decomposed = text.normalized(QString::NormalizationForm_D);
++    QString folded;
++    folded.reserve(decomposed.size());
++    for (const QChar ch : decomposed) {
++        const auto category = ch.category();
++        if (category == QChar::Mark_NonSpacing ||
++            category == QChar::Mark_SpacingCombining ||
++            category == QChar::Mark_Enclosing) {
++            continue;
+         }
++        folded.append(ch);
+     }
+ 
+-    while (!result.empty() && result.front() == ' ') {
+-        result.erase(result.begin());
+-    }
+-    while (!result.empty() && result.back() == ' ') {
+-        result.pop_back();
++    const QString case_folded = folded.normalized(QString::NormalizationForm_C).toCaseFolded();
++    QString normalized;
++    normalized.reserve(case_folded.size());
++    for (const QChar ch : case_folded) {
++        if (ch.isLetterOrNumber()) {
++            normalized.append(ch);
++        } else if (!normalized.isEmpty() && !normalized.endsWith(QLatin1Char(' '))) {
++            normalized.append(QLatin1Char(' '));
++        }
+     }
+-    return result;
++    return normalized.trimmed().toUtf8().toStdString();
+ }
+ 
+ std::string strip_trailing_stopwords(const std::string& normalized)
+@@ -462,6 +475,69 @@ NormalizedCategory normalize_category(std::string category, std::string subcateg
+     };
+ }
+ 
++bool is_minor_label_correction(const std::string& old_label,
++                               const std::string& new_label,
++                               std::string* reason)
++{
++    const auto reject = [&](const char* why) {
++        if (reason) {
++            *reason = why;
++        }
++        return false;
++    };
++
++    const std::string old_normalized = normalize_label(old_label);
++    const std::string new_normalized = normalize_label(new_label);
++    if (old_normalized.empty() && new_normalized.empty()) {
++        return true;
++    }
++    if (old_normalized.empty() || new_normalized.empty()) {
++        return reject("one label is empty");
++    }
++    if (old_normalized == new_normalized) {
++        return true;
++    }
++
++    const auto token_count = [](const std::string& value) {
++        std::istringstream stream(value);
++        std::string token;
++        std::size_t count = 0;
++        while (stream >> token) {
++            ++count;
++        }
++        return count;
++    };
++    if (token_count(old_normalized) != token_count(new_normalized)) {
++        return reject("different word count");
++    }
++    if (old_normalized.front() != new_normalized.front()) {
++        return reject("different first letter");
++    }
++
++    const std::size_t max_length = std::max(old_normalized.size(), new_normalized.size());
++    const std::size_t allowed_edits = max_length <= 8 ? 1 : (max_length <= 16 ? 2 : 3);
++    std::vector<std::size_t> previous(new_normalized.size() + 1);
++    std::vector<std::size_t> current(new_normalized.size() + 1);
++    for (std::size_t column = 0; column <= new_normalized.size(); ++column) {
++        previous[column] = column;
++    }
++    for (std::size_t row = 1; row <= old_normalized.size(); ++row) {
++        current[0] = row;
++        for (std::size_t column = 1; column <= new_normalized.size(); ++column) {
++            const std::size_t cost =
++                old_normalized[row - 1] == new_normalized[column - 1] ? 0 : 1;
++            current[column] = std::min({previous[column] + 1,
++                                        current[column - 1] + 1,
++                                        previous[column - 1] + cost});
++        }
++        previous.swap(current);
++    }
++    if (previous[new_normalized.size()] > allowed_edits) {
++        return reject("too many edits");
++    }
++    return true;
++}
++
+ double string_similarity(const std::string& a, const std::string& b)
+ {
+     if (a == b) {
+diff --git a/app/lib/HeadlessAnalysisCommand.cpp b/app/lib/HeadlessAnalysisCommand.cpp
+index 2a26d03..1fc6d71 100644
+--- a/app/lib/HeadlessAnalysisCommand.cpp
++++ b/app/lib/HeadlessAnalysisCommand.cpp
+@@ -2,6 +2,7 @@
+ 
+ #include "AnalysisRunResult.hpp"
+ #include "DatabaseManager.hpp"
++#include "DatabaseTaxonomyNormalizer.hpp"
+ #include "HeadlessAnalysisWorkflowHost.hpp"
+ #include "HeadlessReviewApplyService.hpp"
+ #include "HeadlessSettingsOverridesJson.hpp"
+@@ -10,6 +11,7 @@
+ #include "Logger.hpp"
+ #include "ReviewHistoryStore.hpp"
+ #include "Settings.hpp"
++#include "UserLearningStore.hpp"
+ #include "Utils.hpp"
+ 
+ #include <QCoreApplication>
+@@ -24,7 +26,9 @@
+ #include <atomic>
+ #include <cctype>
+ #include <chrono>
++#include <limits>
+ #include <sstream>
++#include <stdexcept>
+ #include <system_error>
+ #include <thread>
+ #include <utility>
+@@ -154,7 +158,7 @@ std::string generate_job_id()
+ bool is_headless_request_flag(const std::string& argument)
+ {
+     return argument == "--headless" || argument == "--headless-apply" ||
+-           argument == "--headless-help";
++           argument == "--headless-correct-label" || argument == "--headless-help";
+ }
+ 
+ bool argument_has_prefix(const std::string& argument, const std::string& prefix)
+@@ -179,7 +183,13 @@ bool is_value_argument(const std::string& argument)
+            argument == "--job-id" || argument == "--headless-job-id" ||
+            argument == "--review-file" || argument == "--headless-review-file" ||
+            argument == "--settings-overrides-file" ||
+-           argument == "--headless-settings-overrides-file";
++           argument == "--headless-settings-overrides-file" ||
++           argument == "--taxonomy-id" || argument == "--headless-taxonomy-id" ||
++           argument == "--category-language" || argument == "--headless-category-language" ||
++           argument == "--current-category" || argument == "--headless-current-category" ||
++           argument == "--current-subcategory" || argument == "--headless-current-subcategory" ||
++           argument == "--category-label" || argument == "--headless-category-label" ||
++           argument == "--subcategory-label" || argument == "--headless-subcategory-label";
+ }
+ 
+ bool parse_value(int argc,
+@@ -216,6 +226,25 @@ bool parse_value(int argc,
+     return true;
+ }
+ 
++bool parse_positive_int(const std::string& value, int* result)
++{
++    if (!result || value.empty()) {
++        return false;
++    }
++    try {
++        std::size_t consumed = 0;
++        const long long parsed = std::stoll(value, &consumed);
++        if (consumed != value.size() || parsed <= 0 ||
++            parsed > static_cast<long long>(std::numeric_limits<int>::max())) {
++            return false;
++        }
++        *result = static_cast<int>(parsed);
++        return true;
++    } catch (const std::exception&) {
++        return false;
++    }
++}
++
+ bool read_settings_overrides_file(const std::filesystem::path& path,
+                                   HeadlessSettingsOverrides* overrides,
+                                   std::string* error)
+@@ -291,11 +320,32 @@ std::optional<std::string> validate_review_apply_options(const HeadlessAnalysisC
+     return std::nullopt;
+ }
+ 
++std::optional<std::string>
++validate_label_correction_options(const HeadlessAnalysisCommand::Options& options)
++{
++    if (options.taxonomy_id <= 0) {
++        return "A positive --taxonomy-id value is required for --headless-correct-label.";
++    }
++    if (options.category_language == CategoryLanguage::English) {
++        return "Label correction requires a non-English --category-language.";
++    }
++    if (options.current_category.empty() || options.current_subcategory.empty()) {
++        return "The current category and subcategory labels are required.";
++    }
++    if (options.corrected_category.empty() || options.corrected_subcategory.empty()) {
++        return "The corrected category and subcategory labels are required.";
++    }
++    return std::nullopt;
++}
++
+ std::optional<std::string> validate_options(const HeadlessAnalysisCommand::Options& options)
+ {
+     if (options.request_mode == HeadlessAnalysisCommand::RequestMode::ApplyReview) {
+         return validate_review_apply_options(options);
+     }
++    if (options.request_mode == HeadlessAnalysisCommand::RequestMode::CorrectLabel) {
++        return validate_label_correction_options(options);
++    }
+     return validate_analysis_options(options);
+ }
+ 
+@@ -646,6 +696,123 @@ int run_review_apply_plan(const HeadlessAnalysisCommand::Options& options,
+                                    err);
+ }
+ 
++int run_label_correction(const HeadlessAnalysisCommand::Options& options,
++                         const AnalysisRuntimeLock::Metadata& metadata,
++                         std::ostream& out,
++                         std::ostream& err)
++{
++    Settings settings;
++    settings.load();
++    DatabaseManager db_manager(settings.get_config_dir());
++    const auto taxonomy = db_manager.get_taxonomy_entry(options.taxonomy_id);
++    if (!taxonomy) {
++        emit_status(options,
++                    "failed",
++                    "Could not correct the category label.",
++                    "The taxonomy id does not exist.",
++                    metadata,
++                    out,
++                    err);
++        return HeadlessAnalysisCommand::Failure;
++    }
++
++    std::string reason;
++    if (!DatabaseTaxonomyNormalizer::is_minor_label_correction(options.current_category,
++                                                               options.corrected_category,
++                                                               &reason)) {
++        emit_status(options,
++                    "failed",
++                    "Not a label correction.",
++                    "Category: " + reason + ".",
++                    metadata,
++                    out,
++                    err);
++        return HeadlessAnalysisCommand::Usage;
++    }
++    if (!DatabaseTaxonomyNormalizer::is_minor_label_correction(options.current_subcategory,
++                                                               options.corrected_subcategory,
++                                                               &reason)) {
++        emit_status(options,
++                    "failed",
++                    "Not a label correction.",
++                    "Subcategory: " + reason + ".",
++                    metadata,
++                    out,
++                    err);
++        return HeadlessAnalysisCommand::Usage;
++    }
++
++    if (options.current_category == options.corrected_category &&
++        options.current_subcategory == options.corrected_subcategory) {
++        emit_status(options,
++                    "completed",
++                    "No category label change was needed.",
++                    {},
++                    metadata,
++                    out,
++                    err);
++        return HeadlessAnalysisCommand::Success;
++    }
++
++    UserLearningStore learning_store(settings.get_config_dir());
++    if (!learning_store.is_open()) {
++        emit_status(options,
++                    "failed",
++                    "Could not correct the category label.",
++                    "The user learning store is not available.",
++                    metadata,
++                    out,
++                    err);
++        return HeadlessAnalysisCommand::Failure;
++    }
++
++    std::string error;
++    if (!learning_store.upsert_category_label_override(
++            taxonomy->category,
++            taxonomy->subcategory,
++            categoryLanguageDisplay(options.category_language),
++            options.corrected_category,
++            options.corrected_subcategory,
++            &error)) {
++        emit_status(options,
++                    "failed",
++                    "Could not save the category label correction.",
++                    error,
++                    metadata,
++                    out,
++                    err);
++        return HeadlessAnalysisCommand::Failure;
++    }
++
++    db_manager.set_user_label_override(taxonomy->category,
++                                       taxonomy->subcategory,
++                                       options.category_language,
++                                       options.corrected_category,
++                                       options.corrected_subcategory);
++
++    QJsonObject payload;
++    payload.insert(QStringLiteral("taxonomyId"), options.taxonomy_id);
++    payload.insert(QStringLiteral("category"), QString::fromStdString(options.corrected_category));
++    payload.insert(QStringLiteral("subcategory"),
++                   QString::fromStdString(options.corrected_subcategory));
++    payload.insert(QStringLiteral("canonicalCategory"),
++                   QString::fromStdString(taxonomy->category));
++    payload.insert(QStringLiteral("canonicalSubcategory"),
++                   QString::fromStdString(taxonomy->subcategory));
++    payload.insert(QStringLiteral("categoryLanguage"),
++                   categoryLanguageToString(options.category_language));
++
++    emit_status(options,
++                "completed",
++                "Category label corrected for every entry in this taxonomy.",
++                {},
++                metadata,
++                out,
++                err,
++                &payload);
++    return HeadlessAnalysisCommand::Success;
++}
++
+ } // namespace
+ 
+ HeadlessAnalysisCommand::ParseResult HeadlessAnalysisCommand::parse(int argc, char** argv)
+@@ -685,6 +852,11 @@ HeadlessAnalysisCommand::ParseResult HeadlessAnalysisCommand::parse(int argc, ch
+             result.consumed_arguments[static_cast<std::size_t>(i)] = true;
+             continue;
+         }
++        if (argument == "--headless-correct-label") {
++            result.options.request_mode = RequestMode::CorrectLabel;
++            result.consumed_arguments[static_cast<std::size_t>(i)] = true;
++            continue;
++        }
+         if (argument == "--headless-help") {
+             result.help_requested = true;
+             result.consumed_arguments[static_cast<std::size_t>(i)] = true;
+@@ -762,6 +934,85 @@ HeadlessAnalysisCommand::ParseResult HeadlessAnalysisCommand::parse(int argc, ch
+             }
+             continue;
+         }
++        if (parse_value(argc,
++                        argv,
++                        i,
++                        argument,
++                        "--taxonomy-id",
++                        "--headless-taxonomy-id",
++                        &value,
++                        &result)) {
++            if (result.error.empty() && !parse_positive_int(value, &result.options.taxonomy_id)) {
++                result.error = "Invalid --taxonomy-id value: " + value + ".";
++            }
++            continue;
++        }
++        if (parse_value(argc,
++                        argv,
++                        i,
++                        argument,
++                        "--category-language",
++                        "--headless-category-language",
++                        &value,
++                        &result)) {
++            if (result.error.empty()) {
++                result.options.category_language =
++                    categoryLanguageFromString(QString::fromStdString(value));
++            }
++            continue;
++        }
++        if (parse_value(argc,
++                        argv,
++                        i,
++                        argument,
++                        "--current-category",
++                        "--headless-current-category",
++                        &value,
++                        &result)) {
++            if (result.error.empty()) {
++                result.options.current_category = value;
++            }
++            continue;
++        }
++        if (parse_value(argc,
++                        argv,
++                        i,
++                        argument,
++                        "--current-subcategory",
++                        "--headless-current-subcategory",
++                        &value,
++                        &result)) {
++            if (result.error.empty()) {
++                result.options.current_subcategory = value;
++            }
++            continue;
++        }
++        if (parse_value(argc,
++                        argv,
++                        i,
++                        argument,
++                        "--category-label",
++                        "--headless-category-label",
++                        &value,
++                        &result)) {
++            if (result.error.empty()) {
++                result.options.corrected_category = value;
++            }
++            continue;
++        }
++        if (parse_value(argc,
++                        argv,
++                        i,
++                        argument,
++                        "--subcategory-label",
++                        "--headless-subcategory-label",
++                        &value,
++                        &result)) {
++            if (result.error.empty()) {
++                result.options.corrected_subcategory = value;
++            }
++            continue;
++        }
+ 
+         if (argument_has_prefix(argument, "--headless-") ||
+             argument_has_prefix(argument, "--operation=") ||
+@@ -770,6 +1021,12 @@ HeadlessAnalysisCommand::ParseResult HeadlessAnalysisCommand::parse(int argc, ch
+             argument_has_prefix(argument, "--review-file=") ||
+             argument_has_prefix(argument, "--settings-overrides-file=") ||
+             argument_has_prefix(argument, "--job-id=") ||
++            argument_has_prefix(argument, "--taxonomy-id=") ||
++            argument_has_prefix(argument, "--category-language=") ||
++            argument_has_prefix(argument, "--current-category=") ||
++            argument_has_prefix(argument, "--current-subcategory=") ||
++            argument_has_prefix(argument, "--category-label=") ||
++            argument_has_prefix(argument, "--subcategory-label=") ||
+             argument_has_prefix(argument, "--include-subdirectories=") ||
+             argument_has_prefix(argument, "--no-include-subdirectories=") ||
+             is_value_argument(argument)) {
+@@ -800,7 +1057,11 @@ std::string HeadlessAnalysisCommand::usage_text()
+            "[--include-subdirectories|--no-include-subdirectories] "
+            "[--settings-overrides-file <json-file>]\n"
+            "       aifilesorter --headless-apply --review-file <json-file> "
+-           "[--status-file <json-file>] [--job-id <id>]\n";
++           "[--status-file <json-file>] [--job-id <id>]\n"
++           "       aifilesorter --headless-correct-label --taxonomy-id <id> "
++           "--category-language <language> --current-category <label> "
++           "--current-subcategory <label> --category-label <label> "
++           "--subcategory-label <label> [--status-file <json-file>] [--job-id <id>]\n";
+ }
+ 
+ std::string HeadlessAnalysisCommand::operation_to_string(Operation operation)
+@@ -861,7 +1122,9 @@ int HeadlessAnalysisCommand::run(const Options& options,
+     AnalysisRuntimeLock::Metadata metadata;
+     metadata.owner = AnalysisRuntimeLock::Owner::Headless;
+     metadata.job_id = options.job_id;
+-    metadata.description = "Headless " + operation_to_string(options.operation);
++    metadata.description = options.request_mode == RequestMode::CorrectLabel
++        ? "Headless label correction"
++        : "Headless " + operation_to_string(options.operation);
+ 
+     std::string lock_error;
+     auto lease = runtime_lock.try_acquire(metadata, &lock_error);
+@@ -884,6 +1147,9 @@ int HeadlessAnalysisCommand::run(const Options& options,
+                 out,
+                 err);
+ 
++    if (options.request_mode == RequestMode::CorrectLabel) {
++        return run_label_correction(options, lease->metadata(), out, err);
++    }
+     if (options.request_mode == RequestMode::ApplyReview) {
+         return run_review_apply_plan(options, lease->metadata(), out, err);
+     }
+diff --git a/app/lib/HeadlessAnalysisWorkflowHost.cpp b/app/lib/HeadlessAnalysisWorkflowHost.cpp
+index 8aefda9..a4e9d67 100644
+--- a/app/lib/HeadlessAnalysisWorkflowHost.cpp
++++ b/app/lib/HeadlessAnalysisWorkflowHost.cpp
+@@ -93,6 +93,20 @@ HeadlessAnalysisWorkflowHost::HeadlessAnalysisWorkflowHost(Options options)
+     results_coordinator_ = std::make_unique<ResultsCoordinator>(storage_provider_);
+     using_local_llm_ = !is_remote_choice(settings_.get_llm_choice());
+     initialize_whitelists();
++    if (user_learning_store_->is_open()) {
++        for (const auto& entry : user_learning_store_->category_label_overrides()) {
++            const CategoryLanguage language =
++                categoryLanguageFromString(QString::fromStdString(entry.language));
++            if (language == CategoryLanguage::English) {
++                continue;
++            }
++            db_manager_->set_user_label_override(entry.category,
++                                                 entry.subcategory,
++                                                 language,
++                                                 entry.display_category,
++                                                 entry.display_subcategory);
++        }
++    }
+ }
+ 
+ HeadlessAnalysisWorkflowHost::~HeadlessAnalysisWorkflowHost() = default;
+diff --git a/app/lib/HeadlessReviewApplyService.cpp b/app/lib/HeadlessReviewApplyService.cpp
+index 7edff7d..d41ec8a 100644
+--- a/app/lib/HeadlessReviewApplyService.cpp
++++ b/app/lib/HeadlessReviewApplyService.cpp
+@@ -4,6 +4,7 @@
+ #include "MovableCategorizedFile.hpp"
+ #include "ReviewFileNaming.hpp"
+ #include "ReviewHistoryStore.hpp"
++#include "ReviewNameValidator.hpp"
+ #include "StorageProvider.hpp"
+ #include "UndoManager.hpp"
+ #include "Utils.hpp"
+@@ -57,16 +58,7 @@ std::string strip_history_description_label(std::string value)
+ 
+ bool contains_only_allowed_chars(const std::string& value)
+ {
+-    static const std::string forbidden = R"(<>:"/\|?*)";
+-    for (unsigned char ch : value) {
+-        if (std::iscntrl(ch)) {
+-            return false;
+-        }
+-        if (forbidden.find(static_cast<char>(ch)) != std::string::npos) {
+-            return false;
+-        }
+-    }
+-    return true;
++    return ReviewNameValidator::contains_only_allowed_chars(value);
+ }
+ 
+ bool is_reserved_windows_name(const std::string& value)
+diff --git a/app/lib/MainApp.cpp b/app/lib/MainApp.cpp
+index 70d12ce..35fbb13 100644
+--- a/app/lib/MainApp.cpp
++++ b/app/lib/MainApp.cpp
+@@ -631,6 +631,7 @@ MainApp::MainApp(Settings& settings,
+     progress_controller_.set_show_vision_diagnostics(is_development_mode() || is_test_mode());
+     TranslationManager::instance().initialize_for_app(qApp, settings.get_language());
+     initialize_whitelists();
++    load_category_label_overrides();
+ 
+     using_local_llm = !is_remote_choice(settings.get_llm_choice());
+ 
+@@ -980,6 +981,19 @@ void MainApp::connect_signals()
+             on_directory_selected(directory);
+         }
+     });
++    connect(destination_browse_button, &QPushButton::clicked, this, [this]() {
++        QString start_directory = destination_entry ? destination_entry->text().trimmed() : QString();
++        if (start_directory.isEmpty()) {
++            start_directory = path_entry ? path_entry->text() : QString();
++        }
++        const QString directory = QFileDialog::getExistingDirectory(
++            this,
++            tr("Select Destination Directory"),
++            start_directory);
++        if (!directory.isEmpty() && destination_entry) {
++            destination_entry->setText(directory);
++        }
++    });
+     connect(exclusion_filter_button,
+             &QPushButton::clicked,
+             this,
+@@ -1188,7 +1202,16 @@ void MainApp::apply_accessibility_metadata()
+         apply_named_control(path_entry, path_label->text(), path_entry->toolTip());
+     }
+ 
++    if (destination_label && destination_entry) {
++        destination_label->setBuddy(destination_entry);
++        apply_named_control(destination_entry,
++                            destination_label->text(),
++                            destination_entry->toolTip());
++    }
++
+     apply_named_control(browse_button, browse_button ? browse_button->text() : QString());
++    apply_named_control(destination_browse_button,
++                        destination_browse_button ? destination_browse_button->text() : QString());
+     apply_named_control(exclusion_filter_button,
+                         exclusion_filter_button ? exclusion_filter_button->text() : QString(),
+                         exclusion_filter_button ? exclusion_filter_button->toolTip() : QString());
+@@ -1758,6 +1781,26 @@ void MainApp::initialize_whitelists()
+     sync_whitelists_to_learning_store();
+ }
+ 
++void MainApp::load_category_label_overrides()
++{
++    if (!user_learning_store_.is_open()) {
++        return;
++    }
++
++    for (const auto& entry : user_learning_store_.category_label_overrides()) {
++        const CategoryLanguage language =
++            categoryLanguageFromString(QString::fromStdString(entry.language));
++        if (language == CategoryLanguage::English) {
++            continue;
++        }
++        db_manager.set_user_label_override(entry.category,
++                                           entry.subcategory,
++                                           language,
++                                           entry.display_category,
++                                           entry.display_subcategory);
++    }
++}
++
+ void MainApp::sync_whitelists_to_learning_store()
+ {
+     if (!user_learning_store_.is_open()) {
+@@ -3358,6 +3401,7 @@ void MainApp::reset_learned_behavior()
+         return;
+     }
+ 
++    db_manager.clear_user_label_overrides();
+     sync_whitelists_to_learning_store();
+     QMessageBox::information(this,
+                              tr("Reset learned behavior?"),
+@@ -3594,7 +3638,7 @@ void MainApp::show_results_dialog(const std::vector<CategorizedFile>& results)
+                                                                        &user_learning_store_,
+                                                                        &review_history_store_);
+         categorization_dialog->show_results(results,
+-                                            get_folder_path(),
++                                            get_destination_folder(),
+                                             settings.get_include_subdirectories(),
+                                             settings.get_offer_rename_images(),
+                                             settings.get_offer_rename_documents(),
+@@ -3641,6 +3685,18 @@ std::string MainApp::get_folder_path() const
+         std::string(bytes.constData(), static_cast<std::size_t>(bytes.size())));
+ }
+ 
++std::string MainApp::get_destination_folder() const
++{
++    if (!destination_entry) {
++        return get_folder_path();
++    }
++
++    const QByteArray bytes = destination_entry->text().trimmed().toUtf8();
++    const std::string configured = normalize_directory_path(
++        std::string(bytes.constData(), static_cast<std::size_t>(bytes.size())));
++    return configured.empty() ? get_folder_path() : configured;
++}
++
+ 
+ void MainApp::run_on_ui(std::function<void()> func)
+ {
+diff --git a/app/lib/MainAppUiBuilder.cpp b/app/lib/MainAppUiBuilder.cpp
+index a781822..b35d719 100644
+--- a/app/lib/MainAppUiBuilder.cpp
++++ b/app/lib/MainAppUiBuilder.cpp
+@@ -416,6 +416,15 @@ void MainAppUiBuilder::build_central_panel(MainApp& app) {
+     path_layout->addWidget(app.exclusion_filter_button);
+     main_layout->addLayout(path_layout);
+ 
++    auto* destination_layout = new QHBoxLayout();
++    app.destination_label = new QLabel(central);
++    app.destination_entry = new QLineEdit(central);
++    app.destination_browse_button = new QPushButton(central);
++    destination_layout->addWidget(app.destination_label);
++    destination_layout->addWidget(app.destination_entry, 1);
++    destination_layout->addWidget(app.destination_browse_button);
++    main_layout->addLayout(destination_layout);
++
+     auto* options_layout = new QHBoxLayout();
+     app.use_subcategories_checkbox = new QCheckBox(central);
+     app.categorize_files_checkbox = new QCheckBox(central);
+@@ -628,6 +637,9 @@ UiTranslator::Dependencies MainAppUiBuilder::build_translator_dependencies(MainA
+         .primary = UiTranslator::PrimaryControls{
+             app.path_label,
+             app.browse_button,
++            app.destination_label,
++            app.destination_entry,
++            app.destination_browse_button,
+             app.analyze_button,
+             app.use_subcategories_checkbox,
+             app.categorization_style_heading,
+diff --git a/app/lib/MainWindowStateBinder.cpp b/app/lib/MainWindowStateBinder.cpp
+index 4084424..f548a58 100644
+--- a/app/lib/MainWindowStateBinder.cpp
++++ b/app/lib/MainWindowStateBinder.cpp
+@@ -356,6 +356,10 @@ void MainWindowStateBinder::restore_sort_folder_state()
+     }
+ 
+     app_.path_entry->setText(effective_folder);
++    if (app_.destination_entry) {
++        app_.destination_entry->setText(
++            QString::fromStdString(app_.settings.get_destination_folder()));
++    }
+ 
+     if (!effective_folder.isEmpty() && QDir(effective_folder).exists()) {
+         app_.statusBar()->showMessage(app_.tr("Loaded folder %1").arg(effective_folder), 3000);
+@@ -460,6 +464,12 @@ void MainWindowStateBinder::sync_ui_to_settings()
+     const QByteArray folder_bytes = app_.path_entry->text().toUtf8();
+     app_.settings.set_sort_folder(
+         std::string(folder_bytes.constData(), static_cast<std::size_t>(folder_bytes.size())));
++    if (app_.destination_entry) {
++        const QByteArray destination_bytes = app_.destination_entry->text().trimmed().toUtf8();
++        app_.settings.set_destination_folder(std::string(
++            destination_bytes.constData(),
++            static_cast<std::size_t>(destination_bytes.size())));
++    }
+     if (app_.file_explorer_menu_action) {
+         app_.settings.set_show_file_explorer(app_.file_explorer_menu_action->isChecked());
+     }
+diff --git a/app/lib/MovableCategorizedFile.cpp b/app/lib/MovableCategorizedFile.cpp
+index 36bfa55..5fd2331 100644
+--- a/app/lib/MovableCategorizedFile.cpp
++++ b/app/lib/MovableCategorizedFile.cpp
+@@ -1,6 +1,7 @@
+ #include "MovableCategorizedFile.hpp"
+ #include "Utils.hpp"
+ #include "Logger.hpp"
++#include "ReviewNameValidator.hpp"
+ #include <filesystem>
+ #include <cstdio>
+ #include <algorithm>
+@@ -24,17 +25,7 @@ std::string to_lower_copy_str(std::string value) {
+ }
+ 
+ bool contains_only_allowed_chars(const std::string& value) {
+-    for (unsigned char ch : value) {
+-        if (std::iscntrl(ch)) {
+-            return false;
+-        }
+-        static const std::string forbidden = R"(<>:"/\|?*)";
+-        if (forbidden.find(static_cast<char>(ch)) != std::string::npos) {
+-            return false;
+-        }
+-        // Everything else is allowed (including non-ASCII letters and punctuation).
+-    }
+-    return true;
++    return ReviewNameValidator::contains_only_allowed_chars(value);
+ }
+ 
+ bool has_leading_or_trailing_space_or_dot(const std::string& value) {
+diff --git a/app/lib/ReviewNameValidator.cpp b/app/lib/ReviewNameValidator.cpp
+index 5179d14..e142f40 100644
+--- a/app/lib/ReviewNameValidator.cpp
++++ b/app/lib/ReviewNameValidator.cpp
+@@ -4,6 +4,7 @@
+ 
+ #include <algorithm>
+ #include <cctype>
++#include <cstdint>
+ #include <string_view>
+ #include <vector>
+ 
+@@ -17,20 +18,6 @@ std::string to_lower_copy(std::string value)
+     return value;
+ }
+ 
+-bool contains_only_allowed_chars(const std::string& value)
+-{
+-    for (unsigned char ch : value) {
+-        if (std::iscntrl(ch)) {
+-            return false;
+-        }
+-        static const std::string forbidden = R"(<>:"/\|?*)";
+-        if (forbidden.find(static_cast<char>(ch)) != std::string::npos) {
+-            return false;
+-        }
+-    }
+-    return true;
+-}
+-
+ bool has_leading_or_trailing_space_or_dot(const std::string& value)
+ {
+     if (value.empty()) {
+@@ -71,6 +58,68 @@ bool looks_like_extension_label(const std::string& value)
+ 
+ } // namespace
+ 
++bool ReviewNameValidator::contains_only_allowed_chars(const std::string& value)
++{
++    static constexpr std::string_view forbidden = R"(<>:\"/\\|?*)";
++
++    for (std::size_t index = 0; index < value.size();) {
++        const unsigned char ch = static_cast<unsigned char>(value[index]);
++
++        if (ch < 0x80) {
++            if (ch < 0x20 || ch == 0x7F) {
++                return false;
++            }
++            if (forbidden.find(static_cast<char>(ch)) != std::string_view::npos) {
++                return false;
++            }
++            ++index;
++            continue;
++        }
++
++        // Decode one UTF-8 sequence so accented letters are checked as characters,
++        // not as individual bytes. Byte 0x81 inside a sequence such as U+0301 must
++        // not be mistaken for a C1 control character.
++        std::uint32_t code_point = 0;
++        std::size_t length = 0;
++        if ((ch & 0xE0) == 0xC0) {
++            code_point = ch & 0x1F;
++            length = 2;
++        } else if ((ch & 0xF0) == 0xE0) {
++            code_point = ch & 0x0F;
++            length = 3;
++        } else if ((ch & 0xF8) == 0xF0) {
++            code_point = ch & 0x07;
++            length = 4;
++        } else {
++            return false;
++        }
++
++        if (index + length > value.size()) {
++            return false;
++        }
++        for (std::size_t offset = 1; offset < length; ++offset) {
++            const unsigned char continuation =
++                static_cast<unsigned char>(value[index + offset]);
++            if ((continuation & 0xC0) != 0x80) {
++                return false;
++            }
++            code_point = (code_point << 6) | (continuation & 0x3F);
++        }
++
++        const bool overlong = (length == 2 && code_point < 0x80) ||
++                              (length == 3 && code_point < 0x800) ||
++                              (length == 4 && code_point < 0x10000);
++        if (overlong || code_point > 0x10FFFF ||
++            (code_point >= 0xD800 && code_point <= 0xDFFF) ||
++            code_point < 0x20 || (code_point >= 0x7F && code_point <= 0x9F)) {
++            return false;
++        }
++
++        index += length;
++    }
++    return true;
++}
++
+ std::string ReviewNameValidator::trim_copy(const std::string& value)
+ {
+     std::string result = value;
+diff --git a/app/lib/Settings.cpp b/app/lib/Settings.cpp
+index e053fea..fd5afe6 100644
+--- a/app/lib/Settings.cpp
++++ b/app/lib/Settings.cpp
+@@ -424,7 +424,8 @@ Settings::Settings()
+       use_consistency_hints(false),
+       use_whitelist(false),
+       default_sort_folder(""),
+-      sort_folder("")
++      sort_folder(""),
++      destination_folder("")
+ {
+     std::string AppName = "AIFileSorter";
+     config_path = define_config_path();
+@@ -578,6 +579,7 @@ void Settings::load_basic_settings(const std::function<bool(const char*, bool)>&
+         categorize_directories = false;
+     }
+     sort_folder = config.getValue("Settings", "SortFolder", default_sort_folder.empty() ? std::string("/") : default_sort_folder);
++    destination_folder = config.getValue("Settings", "DestinationFolder", "");
+     show_file_explorer = load_bool("ShowFileExplorer", true);
+     recent_network_locations = parse_multiline_list(
+         config.getValue("Settings", "RecentNetworkLocations", ""));
+@@ -731,6 +733,10 @@ void Settings::save_core_settings()
+     set_bool_setting(config, settings_section, "ProcessDocumentsOnly", process_documents_only);
+     set_bool_setting(config, settings_section, "AddDocumentDateToCategory", add_document_date_to_category);
+     config.setValue(settings_section, "SortFolder", this->sort_folder);
++    set_optional_setting(config,
++                         settings_section,
++                         "DestinationFolder",
++                         destination_folder);
+ 
+     set_optional_setting(config, settings_section, "SkippedVersion", skipped_version);
+     set_optional_setting(config, settings_section, "WhatsNewVersionShown", whats_new_version_shown);
+@@ -868,6 +874,7 @@ bool Settings::load()
+ {
+     if (!config.load(config_path)) {
+         sort_folder = default_sort_folder.empty() ? std::string("/") : default_sort_folder;
++        destination_folder.clear();
+         set_llm_storage_dir("");
+         // Keep language defaults derived from system locale when no config is found.
+         return false;
+@@ -1396,6 +1403,16 @@ void Settings::set_sort_folder(const std::string &path)
+     this->sort_folder = path;
+ }
+ 
++std::string Settings::get_destination_folder() const
++{
++    return destination_folder;
++}
++
++void Settings::set_destination_folder(const std::string& path)
++{
++    this->destination_folder = path;
++}
++
+ bool Settings::get_consistency_pass_enabled() const
+ {
+     return consistency_pass_enabled;
+diff --git a/app/lib/UiTranslator.cpp b/app/lib/UiTranslator.cpp
+index e52e5d2..940b71b 100644
+--- a/app/lib/UiTranslator.cpp
++++ b/app/lib/UiTranslator.cpp
+@@ -13,6 +13,7 @@
+ #include <QComboBox>
+ #include <QDockWidget>
+ #include <QLabel>
++#include <QLineEdit>
+ #include <QMainWindow>
+ #include <QMenu>
+ #include <QObject>
+@@ -196,6 +197,17 @@ void UiTranslator::translate_primary_controls(bool analysis_in_progress) const
+     if (auto* button = raw_ptr(deps_.primary.browse_button)) {
+         button->setText(tr("Browse…"));
+     }
++    if (auto* label = raw_ptr(deps_.primary.destination_label)) {
++        label->setText(tr("Destination folder:"));
++    }
++    if (auto* entry = raw_ptr(deps_.primary.destination_entry)) {
++        entry->setPlaceholderText(tr("Same as source folder"));
++        entry->setToolTip(tr("Optional. Leave empty to sort into the source folder."));
++    }
++    if (auto* button = raw_ptr(deps_.primary.destination_browse_button)) {
++        button->setText(tr("Browse…"));
++        button->setToolTip(tr("Choose a different destination folder"));
++    }
+     if (auto* checkbox = raw_ptr(deps_.primary.use_subcategories_checkbox)) {
+         checkbox->setText(tr("Use subcategories"));
+         checkbox->setToolTip(tr("Create subcategory folders within each category."));
+diff --git a/app/lib/UndoManager.cpp b/app/lib/UndoManager.cpp
+index 80a4c6d..a1c834d 100644
+--- a/app/lib/UndoManager.cpp
++++ b/app/lib/UndoManager.cpp
+@@ -200,5 +200,13 @@ UndoManager::UndoResult UndoManager::undo_plan(const QString& plan_path) const
+         }
+     }
+ 
++    const QString base_dir = root.value("base_dir").toString();
++    if (!base_dir.isEmpty()) {
++        QDir base_dir_handle(base_dir);
++        if (!base_dir_handle.exists()) {
++            base_dir_handle.mkpath(QStringLiteral("."));
++        }
++    }
++
+     return result;
+ }
+diff --git a/app/lib/UserLearningStore.cpp b/app/lib/UserLearningStore.cpp
+index 3474cfc..aca4743 100644
+--- a/app/lib/UserLearningStore.cpp
++++ b/app/lib/UserLearningStore.cpp
+@@ -268,7 +268,7 @@ bool UserLearningStore::initialize_schema(std::string* error)
+         );
+ 
+         INSERT OR REPLACE INTO learning_meta(key, value)
+-        VALUES('schema_version', '2');
++        VALUES('schema_version', '3');
+ 
+         CREATE TABLE IF NOT EXISTS learned_taxonomy_entries (
+             id INTEGER PRIMARY KEY AUTOINCREMENT,
+@@ -318,6 +318,20 @@ bool UserLearningStore::initialize_schema(std::string* error)
+             FOREIGN KEY(taxonomy_entry_id) REFERENCES learned_taxonomy_entries(id)
+         );
+ 
++        CREATE TABLE IF NOT EXISTS category_label_overrides (
++            id INTEGER PRIMARY KEY AUTOINCREMENT,
++            category TEXT NOT NULL,
++            subcategory TEXT NOT NULL DEFAULT '',
++            normalized_category TEXT NOT NULL,
++            normalized_subcategory TEXT NOT NULL,
++            language TEXT NOT NULL,
++            display_category TEXT NOT NULL,
++            display_subcategory TEXT NOT NULL DEFAULT '',
++            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
++            UNIQUE(normalized_category, normalized_subcategory, language)
++        );
++
+         CREATE TABLE IF NOT EXISTS embedding_metadata (
+             key TEXT PRIMARY KEY,
+             value TEXT NOT NULL,
+@@ -405,6 +419,96 @@ bool UserLearningStore::record_taxonomy_candidate(const TaxonomyCandidate& candi
+     return taxonomy_id > 0 && refresh_taxonomy_embedding(taxonomy_id, error);
+ }
+ 
++bool UserLearningStore::upsert_category_label_override(
++    const std::string& category,
++    const std::string& subcategory,
++    const std::string& language,
++    const std::string& display_category,
++    const std::string& display_subcategory,
++    std::string* error)
++{
++    if (!db_) {
++        if (error) {
++            *error = "User learning database is not open.";
++        }
++        return false;
++    }
++
++    const std::string normalized_category = normalize_label(category);
++    const std::string normalized_subcategory = normalize_label(subcategory);
++    const std::string normalized_language = normalize_label(language);
++    if (normalized_category.empty() || display_category.empty() || normalized_language.empty()) {
++        if (error) {
++            *error = "Category label override requires canonical category, language, and display label.";
++        }
++        return false;
++    }
++
++    const char* sql = R"(
++        INSERT INTO category_label_overrides
++            (category, subcategory, normalized_category, normalized_subcategory,
++             language, display_category, display_subcategory, updated_at)
++        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
++        ON CONFLICT(normalized_category, normalized_subcategory, language)
++        DO UPDATE SET
++            category = excluded.category,
++            subcategory = excluded.subcategory,
++            display_category = excluded.display_category,
++            display_subcategory = excluded.display_subcategory,
++            updated_at = CURRENT_TIMESTAMP;
++    )";
++    auto stmt = prepare_statement(db_, sql, error);
++    if (!stmt) {
++        return false;
++    }
++
++    sqlite3_bind_text(stmt.get(), 1, category.c_str(), -1, SQLITE_TRANSIENT);
++    sqlite3_bind_text(stmt.get(), 2, subcategory.c_str(), -1, SQLITE_TRANSIENT);
++    sqlite3_bind_text(stmt.get(), 3, normalized_category.c_str(), -1, SQLITE_TRANSIENT);
++    sqlite3_bind_text(stmt.get(), 4, normalized_subcategory.c_str(), -1, SQLITE_TRANSIENT);
++    sqlite3_bind_text(stmt.get(), 5, normalized_language.c_str(), -1, SQLITE_TRANSIENT);
++    sqlite3_bind_text(stmt.get(), 6, display_category.c_str(), -1, SQLITE_TRANSIENT);
++    sqlite3_bind_text(stmt.get(), 7, display_subcategory.c_str(), -1, SQLITE_TRANSIENT);
++
++    if (sqlite3_step(stmt.get()) != SQLITE_DONE) {
++        if (error) {
++            *error = sqlite3_errmsg(db_);
++        }
++        return false;
++    }
++    return true;
++}
++
++std::vector<UserLearningStore::CategoryLabelOverride>
++UserLearningStore::category_label_overrides() const
++{
++    std::vector<CategoryLabelOverride> overrides;
++    if (!db_) {
++        return overrides;
++    }
++
++    const char* sql = R"(
++        SELECT category, subcategory, language, display_category, display_subcategory
++        FROM category_label_overrides
++        ORDER BY id;
++    )";
++    auto stmt = prepare_statement(db_, sql, nullptr);
++    if (!stmt) {
++        return overrides;
++    }
++
++    while (sqlite3_step(stmt.get()) == SQLITE_ROW) {
++        overrides.push_back(CategoryLabelOverride{
++            sqlite_text(stmt.get(), 0),
++            sqlite_text(stmt.get(), 1),
++            sqlite_text(stmt.get(), 2),
++            sqlite_text(stmt.get(), 3),
++            sqlite_text(stmt.get(), 4)
++        });
++    }
++    return overrides;
++}
++
+ bool UserLearningStore::import_taxonomy_candidates(const std::vector<TaxonomyCandidate>& candidates,
+                                                    std::string* error)
+ {
+@@ -912,6 +1016,7 @@ bool UserLearningStore::clear_all(std::string* error)
+     const char* sql = R"(
+         BEGIN IMMEDIATE TRANSACTION;
+         DELETE FROM taxonomy_embeddings;
++        DELETE FROM category_label_overrides;
+         DELETE FROM learned_category_aliases;
+         DELETE FROM approved_category_examples;
+         DELETE FROM learned_taxonomy_entries;
+diff --git a/app/resources/i18n/aifilesorter_es.ts b/app/resources/i18n/aifilesorter_es.ts
+index c0991ab..16edf22 100644
+--- a/app/resources/i18n/aifilesorter_es.ts
++++ b/app/resources/i18n/aifilesorter_es.ts
+@@ -175,6 +175,90 @@
+         <source>Edit selected...</source>
+         <translation>Editar seleccionados...</translation>
+     </message>
++    <message>
++        <source>Correct label...</source>
++        <translation>Corregir etiqueta...</translation>
++    </message>
++    <message>
++        <source>Correct a typo or accent in the category label for every file in that category. This does not reclassify files; use Edit selected... for that.</source>
++        <translation>Corrige una errata o una tilde en la etiqueta de categoría para todos los archivos de esa categoría. No reclasifica archivos; usa «Editar seleccionados...» para eso.</translation>
++    </message>
++    <message>
++        <source>Label correction unavailable</source>
++        <translation>Corrección de etiqueta no disponible</translation>
++    </message>
++    <message>
++        <source>Label corrections are only available when the category language is not English.</source>
++        <translation>La corrección de etiquetas solo está disponible cuando el idioma de categorías no es inglés.</translation>
++    </message>
++    <message>
++        <source>The user learning store is not available.</source>
++        <translation>El almacén de aprendizaje del usuario no está disponible.</translation>
++    </message>
++    <message>
++        <source>Select one row</source>
++        <translation>Selecciona una fila</translation>
++    </message>
++    <message>
++        <source>Select exactly one row whose category label you want to correct.</source>
++        <translation>Selecciona exactamente una fila cuya etiqueta de categoría quieras corregir.</translation>
++    </message>
++    <message>
++        <source>No category label</source>
++        <translation>Sin etiqueta de categoría</translation>
++    </message>
++    <message>
++        <source>The selected row has no category label to correct.</source>
++        <translation>La fila seleccionada no tiene una etiqueta de categoría que corregir.</translation>
++    </message>
++    <message>
++        <source>Category not found</source>
++        <translation>Categoría no encontrada</translation>
++    </message>
++    <message>
++        <source>The selected row is not linked to a reusable taxonomy entry.</source>
++        <translation>La fila seleccionada no está vinculada a una entrada de taxonomía reutilizable.</translation>
++    </message>
++    <message>
++        <source>Correct category label</source>
++        <translation>Corregir etiqueta de categoría</translation>
++    </message>
++    <message>
++        <source>This changes the label for every file in &quot;%1 / %2&quot;.&#xa;It does not move or reclassify files. Use &quot;Edit selected...&quot; for that.</source>
++        <translation>Esto cambia la etiqueta de todos los archivos de «%1 / %2».&#xa;No mueve ni reclasifica archivos. Usa «Editar seleccionados...» para eso.</translation>
++    </message>
++    <message>
++        <source>Category:</source>
++        <translation>Categoría:</translation>
++    </message>
++    <message>
++        <source>Subcategory:</source>
++        <translation>Subcategoría:</translation>
++    </message>
++    <message>
++        <source>Not a label correction</source>
++        <translation>No es una corrección de etiqueta</translation>
++    </message>
++    <message>
++        <source>This looks like a different category or subcategory, not a small label correction.&#xa;&#xa;Use &quot;Edit selected...&quot; to reclassify files.</source>
++        <translation>Esto parece una categoría o subcategoría distinta, no una pequeña corrección de etiqueta.&#xa;&#xa;Usa «Editar seleccionados...» para reclasificar archivos.</translation>
++    </message>
++    <message>
++        <source>Apply label correction?</source>
++        <translation>¿Aplicar corrección de etiqueta?</translation>
++    </message>
++    <message>
++        <source>Change the label for all &quot;%1 / %2&quot; entries from &quot;%3 / %4&quot; to &quot;%5 / %6&quot;?</source>
++        <translation>¿Cambiar la etiqueta de todas las entradas «%1 / %2» de «%3 / %4» a «%5 / %6»?</translation>
++    </message>
++    <message>
++        <source>Could not save label correction</source>
++        <translation>No se pudo guardar la corrección de etiqueta</translation>
++    </message>
++    <message>
++        <source>Failed to save the label correction: %1</source>
++        <translation>No se pudo guardar la corrección de etiqueta: %1</translation>
++    </message>
+     <message>
+         <location filename="../../lib/CategorizationDialog.cpp" line="2907"/>
+         <source>Create subcategory folders</source>
+diff --git a/docs/headless-runtime-contract.md b/docs/headless-runtime-contract.md
+index 19fee32..876be1b 100644
+--- a/docs/headless-runtime-contract.md
++++ b/docs/headless-runtime-contract.md
+@@ -16,6 +16,7 @@ GUI classes directly.
+ ```text
+ Usage: aifilesorter --headless --operation <categorize|rename|categorize-and-rename> --path <file-or-folder> [--path <file-or-folder> ...] [--status-file <json-file>] [--job-id <id>] [--review-file <json-file>] [--review-only|--auto-apply] [--include-subdirectories|--no-include-subdirectories] [--settings-overrides-file <json-file>]
+        aifilesorter --headless-apply --review-file <json-file> [--status-file <json-file>] [--job-id <id>]
++       aifilesorter --headless-correct-label --taxonomy-id <id> --category-language <language> --current-category <label> --current-subcategory <label> --category-label <label> --subcategory-label <label> [--status-file <json-file>] [--job-id <id>]
+ ```
+ 
+ ## Supported targets
+@@ -40,6 +41,9 @@ that arbitrary file collections are accepted.
+   plan.
+ - `--headless-apply`: apply a previously saved review plan exactly, without
+   rerunning analysis.
++- `--headless-correct-label`: persist a minor display-label correction for a
++  taxonomy id without reclassifying files. The correction is validated by the
++  shared taxonomy normalizer and applies to future and cached categorizations.
+ 
+ ## Review and apply flow
+ 
+diff --git a/tests/run_database_tests.sh b/tests/run_database_tests.sh
+index 7080214..0957fdf 100755
+--- a/tests/run_database_tests.sh
++++ b/tests/run_database_tests.sh
+@@ -205,6 +205,7 @@ INCLUDES=(
+     -I"$ROOT_DIR/app/include"
+ )
+ 
++QT_PREFIX="$(qmake6 -query QT_INSTALL_PREFIX 2>/dev/null || true)"
+ QT_HEADERS="$(qmake6 -query QT_INSTALL_HEADERS 2>/dev/null || true)"
+ QT_LIB_DIR="$(qmake6 -query QT_INSTALL_LIBS 2>/dev/null || true)"
+ if [[ -z "$QT_HEADERS" || -z "$QT_LIB_DIR" ]]; then
+@@ -212,21 +213,38 @@ if [[ -z "$QT_HEADERS" || -z "$QT_LIB_DIR" ]]; then
+     exit 1
+ fi
+ 
++# Mirror the include ordering used by the CMake target. Putting both the Qt
++# prefix and QtCore on plain -I paths makes Qt's forwarding headers include
++# themselves recursively on Homebrew.
++if [[ -n "$QT_PREFIX" ]]; then
++    QT_CORE_INCLUDE="$QT_PREFIX/include/QtCore"
++    QT_PREFIX_INCLUDE="$QT_PREFIX/include"
++    QT_FRAMEWORK_DIR="$QT_PREFIX/lib"
++else
++    QT_CORE_INCLUDE="$QT_HEADERS/QtCore"
++    QT_PREFIX_INCLUDE="$QT_HEADERS"
++    QT_FRAMEWORK_DIR="$QT_LIB_DIR"
++fi
++
+ INCLUDES+=(
+-    -I"$QT_HEADERS"
+-    -I"$QT_HEADERS/QtCore"
++    -isystem "$QT_CORE_INCLUDE"
++    -idirafter "$QT_PREFIX_INCLUDE"
++    -iframework "$QT_FRAMEWORK_DIR"
++    -DQT_CORE_LIB
+ )
+ 
+ LIBS=(
+-    -L"$QT_LIB_DIR"
+-    -lQt6Core
++    -F"$QT_FRAMEWORK_DIR"
++    -framework QtCore
++    -Wl,-rpath,"$QT_FRAMEWORK_DIR"
+     -lsqlite3
+     -pthread
+ )
+ 
+-g++ -std=c++20 -fPIC "${INCLUDES[@]}" \
++c++ -std=c++20 -fPIC "${INCLUDES[@]}" \
+     "$TEST_SRC" "$STUB_SRC" \
+     "$ROOT_DIR/app/lib/DatabaseManager.cpp" \
++    "$ROOT_DIR/app/lib/DatabaseTaxonomyNormalizer.cpp" \
+     "$ROOT_DIR/app/lib/Utils.cpp" \
+     -o "$OUTPUT" "${LIBS[@]}"
+ 
+diff --git a/tests/unit/test_categorization_dialog.cpp b/tests/unit/test_categorization_dialog.cpp
+index 41decbb..47697f6 100644
+--- a/tests/unit/test_categorization_dialog.cpp
++++ b/tests/unit/test_categorization_dialog.cpp
+@@ -331,6 +331,78 @@ TEST_CASE("CategorizationDialog undo restores moved files") {
+     REQUIRE_FALSE(dialog.test_undo_enabled());
+ }
+ 
++TEST_CASE("CategorizationDialog moves into a separate destination and versions collisions") {
++    EnvVarGuard platform_guard("QT_QPA_PLATFORM", preferred_qt_test_platform());
++    QtAppContext qt_context;
++
++    TempDir source_dir;
++    TempDir destination_dir;
++    const std::filesystem::path source = source_dir.path() / "report.pdf";
++    const std::filesystem::path existing = destination_dir.path() / "Docs" / "Reports" / "report.pdf";
++    std::filesystem::create_directories(existing.parent_path());
++    std::ofstream(source).put('n');
++    std::ofstream(existing).put('o');
++
++    CategorizedFile file;
++    file.file_path = source_dir.path().string();
++    file.file_name = "report.pdf";
++    file.type = FileType::File;
++    file.category = "Docs";
++    file.subcategory = "Reports";
++
++    TempDir undo_dir;
++    CategorizationDialog dialog(nullptr, true, undo_dir.path().string());
++    dialog.test_set_entries({file}, destination_dir.path().string());
++    dialog.test_trigger_confirm();
++
++    REQUIRE_FALSE(std::filesystem::exists(source));
++    REQUIRE(std::filesystem::exists(existing));
++    const std::filesystem::path versioned =
++        destination_dir.path() / "Docs" / "Reports" / "report (1).pdf";
++    REQUIRE(std::filesystem::exists(versioned));
++
++    std::ifstream existing_stream(existing);
++    const std::string existing_contents((std::istreambuf_iterator<char>(existing_stream)),
++                                        std::istreambuf_iterator<char>());
++    CHECK(existing_contents == "o");
++
++    dialog.test_trigger_undo();
++    REQUIRE(std::filesystem::exists(source));
++    CHECK_FALSE(std::filesystem::exists(versioned));
++    REQUIRE(std::filesystem::exists(existing));
++}
++
++TEST_CASE("CategorizationDialog keeps a separate destination root after undo") {
++    EnvVarGuard platform_guard("QT_QPA_PLATFORM", preferred_qt_test_platform());
++    QtAppContext qt_context;
++
++    TempDir source_dir;
++    TempDir destination_parent;
++    const std::filesystem::path destination_root = destination_parent.path() / "sorted";
++    const std::filesystem::path source = source_dir.path() / "report.pdf";
++    std::ofstream(source).put('x');
++
++    CategorizedFile file;
++    file.file_path = source_dir.path().string();
++    file.file_name = "report.pdf";
++    file.type = FileType::File;
++    file.category = "Docs";
++    file.subcategory = "Reports";
++
++    TempDir undo_dir;
++    CategorizationDialog dialog(nullptr, true, undo_dir.path().string());
++    dialog.test_set_entries({file}, destination_root.string());
++    dialog.test_trigger_confirm();
++
++    REQUIRE_FALSE(std::filesystem::exists(source));
++    REQUIRE(std::filesystem::exists(destination_root / "Docs" / "Reports" / "report.pdf"));
++
++    dialog.test_trigger_undo();
++
++    REQUIRE(std::filesystem::exists(source));
++    CHECK(std::filesystem::exists(destination_root));
++}
++
+ TEST_CASE("CategorizationDialog records applied review history with descriptions")
+ {
+     EnvVarGuard platform_guard("QT_QPA_PLATFORM", preferred_qt_test_platform());
+@@ -638,6 +710,43 @@ TEST_CASE("UndoManager restores saved plans through the active storage provider"
+     REQUIRE_FALSE(std::filesystem::exists(destination));
+ }
+ 
++TEST_CASE("UndoManager preserves the plan base directory") {
++    TempDir undo_dir;
++    TempDir data_parent;
++
++    StorageProviderRegistry registry;
++    auto local_provider = std::make_shared<LocalFsProvider>();
++    registry.register_builtin(local_provider);
++
++    const std::filesystem::path base_dir = data_parent.path() / "sorted";
++    const std::filesystem::path source = data_parent.path() / "original.txt";
++    const std::filesystem::path destination = base_dir / "Moved" / "original.txt";
++    std::ofstream(source).put('x');
++
++    const auto move_result = local_provider->move_entry(source.string(), destination.string());
++    REQUIRE(move_result.success);
++
++    UndoManager writer(undo_dir.path().string());
++    REQUIRE(writer.save_plan(base_dir.string(),
++                             local_provider->id(),
++                             {UndoManager::Entry{
++                                 source.string(),
++                                 destination.string(),
++                                 move_result.metadata.size_bytes,
++                                 move_result.metadata.mtime}},
++                             nullptr));
++
++    UndoManager reader(undo_dir.path().string(), &registry);
++    const auto plan_path = reader.latest_plan_path();
++    REQUIRE(plan_path.has_value());
++
++    const auto undo_result = reader.undo_plan(*plan_path);
++    CHECK(undo_result.restored == 1);
++    CHECK(undo_result.skipped == 0);
++    REQUIRE(std::filesystem::exists(source));
++    CHECK(std::filesystem::exists(base_dir));
++}
++
+ TEST_CASE("UndoManager relaxes timestamp validation for cloud providers") {
+     TempDir undo_dir;
+     TempDir data_dir;
+diff --git a/tests/unit/test_headless_analysis_command.cpp b/tests/unit/test_headless_analysis_command.cpp
+index 45a0d43..18f9d52 100644
+--- a/tests/unit/test_headless_analysis_command.cpp
++++ b/tests/unit/test_headless_analysis_command.cpp
+@@ -6,6 +6,7 @@
+ #include "HeadlessReviewApplyService.hpp"
+ #include "LocalFsProvider.hpp"
+ #include "Settings.hpp"
++#include "UserLearningStore.hpp"
+ #include "Utils.hpp"
+ 
+ #include <QByteArray>
+@@ -276,6 +277,141 @@ TEST_CASE("HeadlessAnalysisCommand parses saved review apply requests")
+     CHECK(parsed.options.job_id == "apply-job");
+ }
+ 
++TEST_CASE("HeadlessAnalysisCommand parses label correction requests")
++{
++    char arg0[] = "aifilesorter";
++    char arg1[] = "--headless-correct-label";
++    char arg2[] = "--taxonomy-id";
++    char arg3[] = "482";
++    char arg4[] = "--category-language";
++    char arg5[] = "Spanish";
++    char arg6[] = "--current-category";
++    char arg7[] = "Guas";
++    char arg8[] = "--current-subcategory";
++    char arg9[] = "General";
++    char arg10[] = "--category-label";
++    char arg11[] = "Guías";
++    char arg12[] = "--subcategory-label";
++    char arg13[] = "General";
++    char arg14[] = "--job-id=label-job";
++    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7, arg8, arg9,
++                    arg10, arg11, arg12, arg13, arg14};
++
++    const auto parsed = HeadlessAnalysisCommand::parse(15, argv);
++    REQUIRE(parsed.requested);
++    CHECK(parsed.error.empty());
++    CHECK(parsed.options.request_mode == HeadlessAnalysisCommand::RequestMode::CorrectLabel);
++    CHECK(parsed.options.taxonomy_id == 482);
++    CHECK(parsed.options.category_language == CategoryLanguage::Spanish);
++    CHECK(parsed.options.current_category == "Guas");
++    CHECK(parsed.options.current_subcategory == "General");
++    CHECK(parsed.options.corrected_category == "Guías");
++    CHECK(parsed.options.corrected_subcategory == "General");
++    CHECK(parsed.options.job_id == "label-job");
++}
++
++TEST_CASE("HeadlessAnalysisCommand rejects unrelated label replacements")
++{
++    char arg0[] = "aifilesorter";
++    char arg1[] = "--headless-correct-label";
++    char arg2[] = "--taxonomy-id=482";
++    char arg3[] = "--category-language=Spanish";
++    char arg4[] = "--current-category=Guas";
++    char arg5[] = "--current-subcategory=General";
++    char arg6[] = "--category-label=Esternocleidomastoideo";
++    char arg7[] = "--subcategory-label=General";
++    char* argv[] = {arg0, arg1, arg2, arg3, arg4, arg5, arg6, arg7};
++
++    const auto parsed = HeadlessAnalysisCommand::parse(8, argv);
++    REQUIRE(parsed.requested);
++    CHECK(parsed.error.empty());
++
++    QTemporaryDir dir;
++    REQUIRE(dir.isValid());
++    QTemporaryDir config_root;
++    REQUIRE(config_root.isValid());
++    ScopedEnvironmentVariable config_env("AI_FILE_SORTER_CONFIG_DIR",
++                                         config_root.path().toUtf8());
++
++    const QString config_path = QDir(config_root.path()).filePath(QStringLiteral("AIFileSorter"));
++    REQUIRE(QDir().mkpath(config_path));
++    const std::string config_dir = config_path.toStdString();
++    int taxonomy_id = 0;
++    {
++        DatabaseManager db(config_dir);
++        taxonomy_id = db.resolve_category("Guides", "General").taxonomy_id;
++        REQUIRE(taxonomy_id > 0);
++    }
++
++    auto options = parsed.options;
++    options.taxonomy_id = taxonomy_id;
++    options.status_file = std::filesystem::path(dir.path().toStdString()) / "status.json";
++    std::ostringstream out;
++    std::ostringstream err;
++    const int exit_code = HeadlessAnalysisCommand::run(
++        options, std::filesystem::path(dir.path().toStdString()) / "runtime", out, err);
++
++    CHECK(exit_code == HeadlessAnalysisCommand::Usage);
++    const QJsonObject status = read_status(*options.status_file);
++    CHECK(status.value(QStringLiteral("status")).toString() == QStringLiteral("failed"));
++    CHECK(status.value(QStringLiteral("error")).toString().contains(QStringLiteral("Category:")));
++}
++
++TEST_CASE("HeadlessAnalysisCommand persists a valid label correction")
++{
++    QTemporaryDir dir;
++    REQUIRE(dir.isValid());
++    QTemporaryDir config_root;
++    REQUIRE(config_root.isValid());
++    ScopedEnvironmentVariable config_env("AI_FILE_SORTER_CONFIG_DIR",
++                                         config_root.path().toUtf8());
++
++    const QString config_path = QDir(config_root.path()).filePath(QStringLiteral("AIFileSorter"));
++    REQUIRE(QDir().mkpath(config_path));
++    const std::string config_dir = config_path.toStdString();
++    int taxonomy_id = 0;
++    {
++        DatabaseManager db(config_dir);
++        const auto taxonomy = db.resolve_category("Guides", "General");
++        REQUIRE(taxonomy.taxonomy_id > 0);
++        taxonomy_id = taxonomy.taxonomy_id;
++    }
++
++    const std::filesystem::path status_path =
++        std::filesystem::path(dir.path().toStdString()) / "status.json";
++    HeadlessAnalysisCommand::Options options;
++    options.request_mode = HeadlessAnalysisCommand::RequestMode::CorrectLabel;
++    options.taxonomy_id = taxonomy_id;
++    options.category_language = CategoryLanguage::Spanish;
++    options.current_category = "Guas";
++    options.current_subcategory = "General";
++    options.corrected_category = "Guías";
++    options.corrected_subcategory = "General";
++    options.status_file = status_path;
++    options.job_id = "label-correction";
++
++    std::ostringstream out;
++    std::ostringstream err;
++    const int exit_code = HeadlessAnalysisCommand::run(
++        options, std::filesystem::path(dir.path().toStdString()) / "runtime", out, err);
++
++    CHECK(exit_code == HeadlessAnalysisCommand::Success);
++    const QJsonObject status = read_status(status_path);
++    CHECK(status.value(QStringLiteral("status")).toString() == QStringLiteral("completed"));
++    CHECK(status.value(QStringLiteral("category")).toString() == QStringLiteral("Guías"));
++    CHECK(status.value(QStringLiteral("subcategory")).toString() == QStringLiteral("General"));
++
++    UserLearningStore store(config_dir);
++    REQUIRE(store.is_open());
++    const auto overrides = store.category_label_overrides();
++    REQUIRE(overrides.size() == 1);
++    CHECK(overrides.front().category == "Guides");
++    CHECK(overrides.front().subcategory == "General");
++    CHECK(overrides.front().language == "spanish");
++    CHECK(overrides.front().display_category == "Guías");
++    CHECK(overrides.front().display_subcategory == "General");
++}
++
+ TEST_CASE("HeadlessAnalysisCommand reports busy runtime lock")
+ {
+     QTemporaryDir dir;
+diff --git a/tests/unit/test_review_name_validator.cpp b/tests/unit/test_review_name_validator.cpp
+index fe8626d..1767981 100644
+--- a/tests/unit/test_review_name_validator.cpp
++++ b/tests/unit/test_review_name_validator.cpp
+@@ -12,6 +12,15 @@ TEST_CASE("ReviewNameValidator validates filenames")
+     CHECK(ReviewNameValidator::validate_filename(
+         std::string("rapport_") + "\xC3\xA9" + "nergie.txt",
+         error));
++    CHECK(ReviewNameValidator::validate_filename(
++        std::string("presentacio") + "\xCC\x81" + "n scrum metodologi" +
++            "\xCC\x81" + "a.pptx",
++        error));
++
++    CHECK_FALSE(ReviewNameValidator::validate_filename(
++        std::string("bad") + "\xC2\x81" + "control.txt",
++        error));
++    CHECK(error == "Filename contains disallowed characters");
+ 
+     CHECK_FALSE(ReviewNameValidator::validate_filename("", error));
+     CHECK(error == "Filename is empty");
+@@ -35,6 +44,14 @@ TEST_CASE("ReviewNameValidator validates category labels")
+         std::string("Rapports ") + "\xC3\xA9" + "nergie",
+         "Q2",
+         error));
++    CHECK(ReviewNameValidator::validate_labels(
++        std::string("Gui") + "\xCC\x81" + "as",
++        "General",
++        error));
++    CHECK(ReviewNameValidator::validate_labels(
++        "Libros",
++        std::string("Ingenieri") + "\xCC\x81" + "a",
++        error));
+ 
+     CHECK_FALSE(ReviewNameValidator::validate_labels("Documents", "Documents", error));
+     CHECK(error == "Category and subcategory are identical");
+diff --git a/tests/unit/test_settings_image_options.cpp b/tests/unit/test_settings_image_options.cpp
+index bdfcffe..4398b8e 100644
+--- a/tests/unit/test_settings_image_options.cpp
++++ b/tests/unit/test_settings_image_options.cpp
+@@ -89,6 +89,25 @@ TEST_CASE("Settings persists recent network locations") {
+     CHECK(loaded.get_recent_network_locations().at(1) == "\\\\server-two\\archive");
+ }
+ 
++TEST_CASE("Settings persists a separate destination folder") {
++    TempDir temp;
++    EnvVarGuard home_guard("HOME", temp.path().string());
++#ifdef _WIN32
++    EnvVarGuard appdata_guard("APPDATA", temp.path().string());
++#endif
++    EnvVarGuard config_guard("AI_FILE_SORTER_CONFIG_DIR", temp.path().string());
++
++    const std::string destination = (temp.path() / "store" / "sorted").string();
++    Settings settings;
++    settings.load();
++    settings.set_destination_folder(destination);
++    REQUIRE(settings.save());
++
++    Settings reloaded;
++    REQUIRE(reloaded.load());
++    CHECK(reloaded.get_destination_folder() == destination);
++}
++
+ TEST_CASE("Settings defaults to one-level category folders when config key is missing") {
+     TempDir temp;
+     EnvVarGuard home_guard("HOME", temp.path().string());
+diff --git a/tests/unit/test_taxonomy_normalization.cpp b/tests/unit/test_taxonomy_normalization.cpp
+new file mode 100644
+index 0000000..19063df
+--- /dev/null
++++ b/tests/unit/test_taxonomy_normalization.cpp
+@@ -0,0 +1,180 @@
++#include <catch2/catch_test_macros.hpp>
++
++#include "DatabaseManager.hpp"
++#include "DatabaseTaxonomyNormalizer.hpp"
++#include "TestHelpers.hpp"
++
++#include <sqlite3.h>
++
++#include <filesystem>
++
++TEST_CASE("DatabaseTaxonomyNormalizer folds accents without dropping letters", "[taxonomy]") {
++    using DatabaseTaxonomyNormalizer::normalize_label;
++
++    CHECK(normalize_label("Películas") == "peliculas");
++    CHECK(normalize_label("Pelculas") == "pelculas");
++    CHECK(normalize_label("Guías") == "guias");
++    CHECK(normalize_label("Guas") == "guas");
++    CHECK(normalize_label("Música") == "musica");
++    CHECK(normalize_label("Msica") == "msica");
++    CHECK(normalize_label("Metodologías Ágiles") == "metodologias agiles");
++    CHECK(normalize_label("Metodologas giles") == "metodologas giles");
++    CHECK(normalize_label("日本語") == "日本語");
++}
++
++TEST_CASE("DatabaseManager keeps accented and truncated labels distinct", "[taxonomy]") {
++    TempDir base_dir;
++    EnvVarGuard config_guard("AI_FILE_SORTER_CONFIG_DIR", base_dir.path().string());
++    DatabaseManager db(base_dir.path().string());
++
++    const auto accented = db.resolve_category("Películas", "Metodologías Ágiles");
++    const auto truncated = db.resolve_category("Pelculas", "Metodologas giles");
++
++    REQUIRE(accented.taxonomy_id > 0);
++    REQUIRE(truncated.taxonomy_id > 0);
++    CHECK(accented.taxonomy_id != truncated.taxonomy_id);
++    CHECK(accented.category == "Películas");
++    CHECK(accented.subcategory == "Metodologías Ágiles");
++    CHECK(truncated.category == "Pelculas");
++    CHECK(truncated.subcategory == "Metodologas giles");
++
++    const auto music = db.resolve_category("Música", "General");
++    const auto broken_music = db.resolve_category("Msica", "General");
++    REQUIRE(music.taxonomy_id > 0);
++    REQUIRE(broken_music.taxonomy_id > 0);
++    CHECK(music.taxonomy_id != broken_music.taxonomy_id);
++
++    const auto guides = db.resolve_category("Guías", "General");
++    const auto broken_guides = db.resolve_category("Guas", "General");
++    REQUIRE(guides.taxonomy_id > 0);
++    REQUIRE(broken_guides.taxonomy_id > 0);
++    CHECK(guides.taxonomy_id != broken_guides.taxonomy_id);
++}
++
++TEST_CASE("DatabaseTaxonomyNormalizer accepts only minor label corrections", "[taxonomy]") {
++    using DatabaseTaxonomyNormalizer::is_minor_label_correction;
++
++    CHECK(is_minor_label_correction("Guas", "Guías"));
++    CHECK(is_minor_label_correction("Ingeniera", "Ingeniería"));
++    CHECK(is_minor_label_correction("Metodologa Scrum", "Metodología Scrum"));
++    CHECK(is_minor_label_correction("Guías", "Guias"));
++    CHECK(is_minor_label_correction("", ""));
++
++    CHECK_FALSE(is_minor_label_correction("Guas", "Esternocleidomastoideo"));
++    CHECK_FALSE(is_minor_label_correction("Guas", "Guas de usuario"));
++    CHECK_FALSE(is_minor_label_correction("Guas", "Libros"));
++    CHECK_FALSE(is_minor_label_correction("Guas", ""));
++}
++
++TEST_CASE("DatabaseManager applies user label overrides before cached translations", "[taxonomy]") {
++    TempDir base_dir;
++    EnvVarGuard config_guard("AI_FILE_SORTER_CONFIG_DIR", base_dir.path().string());
++    DatabaseManager db(base_dir.path().string());
++
++    const auto resolved = db.resolve_category("Guides", "General");
++    REQUIRE(resolved.taxonomy_id > 0);
++    REQUIRE(db.upsert_category_translation(resolved.taxonomy_id,
++                                           CategoryLanguage::Spanish,
++                                           "Guas",
++                                           "General"));
++
++    CHECK(db.localize_category(resolved, CategoryLanguage::Spanish).category == "Guas");
++
++    db.set_user_label_override("Guides",
++                               "General",
++                               CategoryLanguage::Spanish,
++                               "Guías",
++                               "General");
++    const auto overridden = db.localize_category(resolved, CategoryLanguage::Spanish);
++    CHECK(overridden.category == "Guías");
++    CHECK(overridden.subcategory == "General");
++
++    CategorizedFile entry;
++    entry.file_path = "/sample";
++    entry.file_name = "guide.pdf";
++    entry.type = FileType::File;
++    entry.category = "Guides";
++    entry.subcategory = "General";
++    entry.taxonomy_id = resolved.taxonomy_id;
++    entry.canonical_category = "Guides";
++    entry.canonical_subcategory = "General";
++    CHECK(db.localize_categorized_file(entry, CategoryLanguage::Spanish).category == "Guías");
++
++    db.clear_user_label_overrides();
++    CHECK(db.localize_category(resolved, CategoryLanguage::Spanish).category == "Guas");
++}
++
++TEST_CASE("DatabaseManager invalidates normalization caches on version change", "[taxonomy]") {
++    TempDir base_dir;
++    EnvVarGuard config_guard("AI_FILE_SORTER_CONFIG_DIR", base_dir.path().string());
++    const std::string db_path = (base_dir.path() / "categorization_results.db").string();
++    int translated_taxonomy_id = 0;
++
++    {
++        DatabaseManager db(base_dir.path().string());
++        const auto resolved = db.resolve_category("Películas", "Metodologías Ágiles");
++        REQUIRE(resolved.taxonomy_id > 0);
++        translated_taxonomy_id = resolved.taxonomy_id;
++
++        REQUIRE(db.upsert_category_translation(resolved.taxonomy_id,
++                                               CategoryLanguage::French,
++                                               "Películas",
++                                               "Metodologías Ágiles"));
++        REQUIRE(db.insert_or_update_file_with_categorization(
++            "keep.mkv", "F", "/sample", resolved, false, std::string(), false, true));
++        REQUIRE(db.insert_or_update_file_with_categorization(
++            "drop.mkv", "F", "/sample", resolved, false, std::string(), false, false));
++    }
++
++    {
++        sqlite3* raw_db = nullptr;
++        REQUIRE(sqlite3_open(db_path.c_str(), &raw_db) == SQLITE_OK);
++        char* error = nullptr;
++        REQUIRE(sqlite3_exec(raw_db,
++                             "UPDATE cache_metadata SET value = '1' "
++                             "WHERE key = 'taxonomy_normalization_version';",
++                             nullptr,
++                             nullptr,
++                             &error) == SQLITE_OK);
++        if (error) {
++            sqlite3_free(error);
++        }
++        REQUIRE(sqlite3_close(raw_db) == SQLITE_OK);
++    }
++
++    {
++        DatabaseManager db(base_dir.path().string());
++
++        const auto kept = db.get_categorized_file("/sample", "keep.mkv", FileType::File);
++        REQUIRE(kept.has_value());
++        CHECK(kept->rename_applied);
++        CHECK(kept->taxonomy_id == 0);
++        CHECK(kept->category == "Películas");
++
++        const auto dropped = db.get_categorized_file("/sample", "drop.mkv", FileType::File);
++        CHECK_FALSE(dropped.has_value());
++        CHECK_FALSE(db.get_category_translation(translated_taxonomy_id,
++                                                CategoryLanguage::French).has_value());
++    }
++
++    {
++        sqlite3* raw_db = nullptr;
++        REQUIRE(sqlite3_open(db_path.c_str(), &raw_db) == SQLITE_OK);
++        const auto count = [&](const char* sql) {
++            sqlite3_stmt* stmt = nullptr;
++            REQUIRE(sqlite3_prepare_v2(raw_db, sql, -1, &stmt, nullptr) == SQLITE_OK);
++            REQUIRE(sqlite3_step(stmt) == SQLITE_ROW);
++            const int value = sqlite3_column_int(stmt, 0);
++            sqlite3_finalize(stmt);
++            return value;
++        };
++
++        CHECK(count("SELECT COUNT(*) FROM category_taxonomy;") == 0);
++        CHECK(count("SELECT COUNT(*) FROM category_translation;") == 0);
++        CHECK(count("SELECT COUNT(*) FROM category_alias;") == 0);
++        CHECK(count("SELECT COUNT(*) FROM file_categorization;") == 1);
++        CHECK(count("SELECT CAST(value AS INTEGER) FROM cache_metadata "
++                    "WHERE key = 'taxonomy_normalization_version';") == 2);
++        sqlite3_close(raw_db);
++    }
++}
+diff --git a/tests/unit/test_ui_translator.cpp b/tests/unit/test_ui_translator.cpp
+index 297f8ec..cc3ae89 100644
+--- a/tests/unit/test_ui_translator.cpp
++++ b/tests/unit/test_ui_translator.cpp
+@@ -16,6 +16,7 @@
+ #include <QDockWidget>
+ #include <QKeyEvent>
+ #include <QLabel>
++#include <QLineEdit>
+ #include <QMainWindow>
+ #include <QMenu>
+ #include <QMenuBar>
+@@ -41,6 +42,9 @@ struct UiTranslatorTestHarness {
+ 
+     QPointer<QLabel> path_label{new QLabel(&window)};
+     QPointer<QPushButton> browse_button{new QPushButton(&window)};
++    QPointer<QLabel> destination_label{new QLabel(&window)};
++    QPointer<QLineEdit> destination_entry{new QLineEdit(&window)};
++    QPointer<QPushButton> destination_browse_button{new QPushButton(&window)};
+     QPointer<QPushButton> analyze_button{new QPushButton(&window)};
+     QPointer<QCheckBox> subcategories_checkbox{new QCheckBox(&window)};
+     QPointer<QLabel> style_heading{new QLabel(&window)};
+@@ -245,6 +249,9 @@ struct UiTranslatorTestHarness {
+             .primary = UiTranslator::PrimaryControls{
+                 path_label,
+                 browse_button,
++                destination_label,
++                destination_entry,
++                destination_browse_button,
+                 analyze_button,
+                 subcategories_checkbox,
+                 style_heading,
+@@ -361,6 +368,9 @@ void verify_primary_controls(const UiTranslatorTestHarness& h)
+ {
+     REQUIRE(h.path_label->text() == QStringLiteral("Folder:"));
+     REQUIRE(h.browse_button->text() == QStringLiteral("Browse…"));
++    REQUIRE(h.destination_label->text() == QStringLiteral("Destination folder:"));
++    REQUIRE(h.destination_entry->placeholderText() == QStringLiteral("Same as source folder"));
++    REQUIRE(h.destination_browse_button->text() == QStringLiteral("Browse…"));
+     REQUIRE(h.analyze_button->text() == QStringLiteral("Analyze folder"));
+     REQUIRE(h.subcategories_checkbox->text() == QStringLiteral("Use subcategories"));
+     REQUIRE(h.style_heading->text() == QStringLiteral("Categorization type"));
+diff --git a/tests/unit/test_user_learning_store.cpp b/tests/unit/test_user_learning_store.cpp
+index b63f4e9..5bf2740 100644
+--- a/tests/unit/test_user_learning_store.cpp
++++ b/tests/unit/test_user_learning_store.cpp
+@@ -276,6 +276,53 @@ TEST_CASE("UserLearningStore uses stored embeddings during candidate retrieval")
+     CHECK(candidates.front().embedding_similarity > 0.0);
+ }
+ 
++TEST_CASE("UserLearningStore persists category label overrides outside the categorization cache")
++{
++    TempDir config_dir;
++    UserLearningStore store(config_dir.path().string());
++    REQUIRE(store.is_open());
++
++    std::string error;
++    REQUIRE(store.upsert_category_label_override("Guides",
++                                                 "General",
++                                                 "Spanish",
++                                                 "Guías",
++                                                 "General",
++                                                 &error));
++    REQUIRE(store.upsert_category_label_override("Books",
++                                                 "Engineering",
++                                                 "Spanish",
++                                                 "Libros",
++                                                 "Ingeniería",
++                                                 &error));
++
++    auto overrides = store.category_label_overrides();
++    REQUIRE(overrides.size() == 2);
++    CHECK(overrides[0].category == "Guides");
++    CHECK(overrides[0].language == "spanish");
++    CHECK(overrides[0].display_category == "Guías");
++    CHECK(overrides[1].display_subcategory == "Ingeniería");
++
++    REQUIRE(store.upsert_category_label_override("Guides",
++                                                 "General",
++                                                 "Spanish",
++                                                 "Guías de usuario",
++                                                 "General",
++                                                 &error));
++    overrides = store.category_label_overrides();
++    REQUIRE(overrides.size() == 2);
++    CHECK(overrides[0].display_category == "Guías de usuario");
++
++    UserLearningStore reloaded(config_dir.path().string());
++    REQUIRE(reloaded.is_open());
++    const auto reloaded_overrides = reloaded.category_label_overrides();
++    REQUIRE(reloaded_overrides.size() == 2);
++    CHECK(reloaded_overrides[0].display_category == "Guías de usuario");
++
++    REQUIRE(store.clear_all(&error));
++    CHECK(store.category_label_overrides().empty());
++}
++
+ TEST_CASE("UserLearningStore clears learned behavior while keeping the database reusable")
+ {
+     TempDir config_dir;

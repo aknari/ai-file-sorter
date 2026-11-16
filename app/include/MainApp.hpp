@@ -166,6 +166,11 @@ public:
      */
     std::string get_folder_path() const;
     /**
+     * @brief Returns the destination root for categorized files.
+     * @return Destination path, or the source folder when the field is empty.
+     */
+    std::string get_destination_folder() const;
+    /**
      * @brief Returns whether the window is running in development mode.
      * @return True when development-only features are enabled.
      */
@@ -243,6 +248,10 @@ private:
      */
     void schedule_category_language_menu_refresh();
     void initialize_whitelists();
+    /**
+     * @brief Loads durable user-selected category labels into the database manager.
+     */
+    void load_category_label_overrides();
     /**
      * @brief Imports current whitelist labels into the separate user-learning database.
      */
@@ -478,6 +487,9 @@ private:
     AnalysisExclusionRules analysis_exclusion_rules_;
 
     QPointer<QLineEdit> path_entry;
+    QPointer<QLabel> destination_label;
+    QPointer<QLineEdit> destination_entry;
+    QPointer<QPushButton> destination_browse_button;
     QPointer<QPushButton> analyze_button;
     QPointer<QPushButton> browse_button;
     QPointer<QPushButton> exclusion_filter_button;

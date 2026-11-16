@@ -16,6 +16,7 @@
 #include <QDockWidget>
 #include <QKeyEvent>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMenuBar>
@@ -41,6 +42,9 @@ struct UiTranslatorTestHarness {
 
     QPointer<QLabel> path_label{new QLabel(&window)};
     QPointer<QPushButton> browse_button{new QPushButton(&window)};
+    QPointer<QLabel> destination_label{new QLabel(&window)};
+    QPointer<QLineEdit> destination_entry{new QLineEdit(&window)};
+    QPointer<QPushButton> destination_browse_button{new QPushButton(&window)};
     QPointer<QPushButton> analyze_button{new QPushButton(&window)};
     QPointer<QCheckBox> subcategories_checkbox{new QCheckBox(&window)};
     QPointer<QLabel> style_heading{new QLabel(&window)};
@@ -245,6 +249,9 @@ struct UiTranslatorTestHarness {
             .primary = UiTranslator::PrimaryControls{
                 path_label,
                 browse_button,
+                destination_label,
+                destination_entry,
+                destination_browse_button,
                 analyze_button,
                 subcategories_checkbox,
                 style_heading,
@@ -361,6 +368,9 @@ void verify_primary_controls(const UiTranslatorTestHarness& h)
 {
     REQUIRE(h.path_label->text() == QStringLiteral("Folder:"));
     REQUIRE(h.browse_button->text() == QStringLiteral("Browse…"));
+    REQUIRE(h.destination_label->text() == QStringLiteral("Destination folder:"));
+    REQUIRE(h.destination_entry->placeholderText() == QStringLiteral("Same as source folder"));
+    REQUIRE(h.destination_browse_button->text() == QStringLiteral("Browse…"));
     REQUIRE(h.analyze_button->text() == QStringLiteral("Analyze folder"));
     REQUIRE(h.subcategories_checkbox->text() == QStringLiteral("Use subcategories"));
     REQUIRE(h.style_heading->text() == QStringLiteral("Categorization type"));

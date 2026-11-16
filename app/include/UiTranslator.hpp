@@ -15,6 +15,7 @@ class QActionGroup;
 
 class QDockWidget;
 class QLabel;
+class QLineEdit;
 class QMainWindow;
 class QMenu;
 class QPushButton;
@@ -41,6 +42,9 @@ public:
     struct PrimaryControls {
         QPointer<QLabel>& path_label;
         QPointer<QPushButton>& browse_button;
+        QPointer<QLabel>& destination_label;
+        QPointer<QLineEdit>& destination_entry;
+        QPointer<QPushButton>& destination_browse_button;
         QPointer<QPushButton>& analyze_button;
         QPointer<QCheckBox>& use_subcategories_checkbox;
         QPointer<QLabel>& categorization_style_heading;

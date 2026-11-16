@@ -213,6 +213,7 @@ QJsonObject apply_options_to_json(const HeadlessReviewApplyService::Options& opt
 {
     QJsonObject object;
     object.insert(QStringLiteral("baseDir"), from_utf8(options.base_dir));
+    object.insert(QStringLiteral("destinationDir"), from_utf8(options.destination_root));
     object.insert(QStringLiteral("undoDir"), from_utf8(options.undo_dir));
     object.insert(QStringLiteral("useSubcategories"), options.use_subcategories);
     object.insert(QStringLiteral("includeSubdirectories"), options.include_subdirectories);
@@ -226,6 +227,8 @@ HeadlessReviewApplyService::Options apply_options_from_json(const QJsonObject& o
 {
     HeadlessReviewApplyService::Options options;
     options.base_dir = to_utf8(object.value(QStringLiteral("baseDir")).toString());
+    options.destination_root =
+        to_utf8(object.value(QStringLiteral("destinationDir")).toString());
     options.undo_dir = to_utf8(object.value(QStringLiteral("undoDir")).toString());
     options.use_subcategories = object.value(QStringLiteral("useSubcategories")).toBool(true);
     options.include_subdirectories = object.value(QStringLiteral("includeSubdirectories")).toBool(false);

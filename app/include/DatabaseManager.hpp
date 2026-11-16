@@ -29,6 +29,12 @@ public:
                                                    CategoryLanguage language);
     std::optional<ResolvedCategory> get_category_translation(int taxonomy_id,
                                                              CategoryLanguage language) const;
+    /**
+     * @brief Return the canonical labels for a taxonomy id.
+     * @param taxonomy_id Stable taxonomy row id.
+     * @return Canonical labels when the id exists.
+     */
+    std::optional<ResolvedCategory> get_taxonomy_entry(int taxonomy_id) const;
     ResolvedCategory localize_category(const ResolvedCategory& resolved,
                                        CategoryLanguage language) const;
     CategorizedFile localize_categorized_file(const CategorizedFile& entry,
@@ -37,6 +43,27 @@ public:
                                      CategoryLanguage language,
                                      const std::string& category,
                                      const std::string& subcategory);
+    /**
+     * @brief Register a durable user-selected display label for a taxonomy entry.
+     *
+     * The canonical labels identify the taxonomy. The override takes precedence
+     * over the generated translation and applies to future and cached rows.
+     *
+     * @param category Canonical category label.
+     * @param subcategory Canonical subcategory label.
+     * @param language Category language to override.
+     * @param display_category User-facing category label.
+     * @param display_subcategory User-facing subcategory label.
+     */
+    void set_user_label_override(const std::string& category,
+                                 const std::string& subcategory,
+                                 CategoryLanguage language,
+                                 const std::string& display_category,
+                                 const std::string& display_subcategory);
+    /**
+     * @brief Remove all in-memory user display-label overrides.
+     */
+    void clear_user_label_overrides();
 
     bool insert_or_update_file_with_categorization(const std::string& file_name,
                                                    const std::string& file_type,
@@ -101,6 +128,12 @@ private:
 
     void initialize_schema();
     void initialize_taxonomy_schema();
+    /**
+     * @brief Invalidates taxonomy, translation, and non-applied file caches when
+     *        the taxonomy normalization algorithm changes.
+     */
+    void ensure_normalization_cache_version();
+    bool invalidate_normalization_caches();
     void load_taxonomy_cache();
     void load_translation_cache();
     /**
@@ -141,6 +174,9 @@ private:
                               const std::string& norm_category,
                               const std::string& norm_subcategory);
     const TaxonomyEntry* find_taxonomy_entry(int taxonomy_id) const;
+    std::optional<ResolvedCategory> find_user_label_override(
+        int taxonomy_id,
+        CategoryLanguage language) const;
 
     std::map<std::string, std::string> cached_results;
     std::string get_cached_category(const std::string &file_name);
@@ -156,6 +192,7 @@ private:
     std::unordered_map<int, size_t> taxonomy_index;
     std::unordered_map<std::string, ResolvedCategory> translation_entries;
     std::unordered_map<std::string, int> translation_lookup;
+    std::unordered_map<std::string, ResolvedCategory> user_label_overrides_;
 
     static bool is_duplicate_category(
         const std::vector<std::pair<std::string, std::string>>& results,

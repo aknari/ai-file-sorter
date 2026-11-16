@@ -10,7 +10,6 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDateTime>
-#include <QMessageBox>
 #include <spdlog/logger.h>
 
 #include <fmt/format.h>
@@ -197,6 +196,14 @@ UndoManager::UndoResult UndoManager::undo_plan(const QString& plan_path) const
                 : QString::fromStdString(undo_result.message);
             result.details << detail;
             result.skipped++;
+        }
+    }
+
+    const QString base_dir = root.value("base_dir").toString();
+    if (!base_dir.isEmpty()) {
+        QDir base_dir_handle(base_dir);
+        if (!base_dir_handle.exists()) {
+            base_dir_handle.mkpath(QStringLiteral("."));
         }
     }
 

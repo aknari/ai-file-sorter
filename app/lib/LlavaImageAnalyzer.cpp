@@ -2,12 +2,10 @@
 
 #include "ImageDecodeUtils.hpp"
 #include "Logger.hpp"
+#include <QString>
 #include "LlamaModelParams.hpp"
 #include "Utils.hpp"
 
-#include <QByteArray>
-#include <QImage>
-#include <QString>
 
 #include <algorithm>
 #include <array>
@@ -1178,11 +1176,8 @@ auto load_bitmap_from_file_compat(Context* vision_ctx, const char* path, long)
 BitmapPtr load_webp_bitmap_as_supported_image(mtmd_context* vision_ctx,
                                               const std::string& image_path_utf8) {
     std::string decode_error;
-    const QImage image = ImageDecodeUtils::decode_image_with_webp_fallback(
-        QString::fromUtf8(image_path_utf8.c_str()),
-        QSize(),
-        &decode_error);
-    if (image.isNull()) {
+    ImageDecodeUtils::DecodedImage decoded;
+    if (!ImageDecodeUtils::decode_image_to_png(image_path_utf8, 0, 0, decoded, &decode_error)) {
         std::string message = "Failed to decode WebP image for visual analysis: " +
                               image_path_utf8;
         if (!decode_error.empty()) {
@@ -1191,16 +1186,10 @@ BitmapPtr load_webp_bitmap_as_supported_image(mtmd_context* vision_ctx,
         throw std::runtime_error(message);
     }
 
-    QByteArray png_bytes;
-    if (!ImageDecodeUtils::encode_image_as_png_bytes(image, png_bytes)) {
-        throw std::runtime_error("Failed to transcode WebP image for visual analysis: " +
-                                 image_path_utf8);
-    }
-
     auto loaded_bitmap = load_bitmap_from_buf_compat(
         vision_ctx,
-        reinterpret_cast<const unsigned char*>(png_bytes.constData()),
-        static_cast<size_t>(png_bytes.size()),
+        decoded.png_bytes.data(),
+        decoded.png_bytes.size(),
         0);
     return BitmapPtr(unwrap_loaded_bitmap(loaded_bitmap));
 }
@@ -1369,10 +1358,9 @@ std::string filename_user_prompt(VisualPromptPolicy policy, std::string_view des
 }
 
 bool can_transcode_webp_for_visual_analysis(const std::filesystem::path& path) {
-    const QImage image = ImageDecodeUtils::decode_image_with_webp_fallback(
-        QString::fromStdString(Utils::path_to_utf8(path)));
-    QByteArray png_bytes;
-    return ImageDecodeUtils::encode_image_as_png_bytes(image, png_bytes) && !png_bytes.isEmpty();
+    ImageDecodeUtils::DecodedImage decoded;
+    return ImageDecodeUtils::decode_image_to_png(Utils::path_to_utf8(path), 0, 0, decoded) &&
+           decoded.valid();
 }
 }
 #endif

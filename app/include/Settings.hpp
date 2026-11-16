@@ -451,6 +451,17 @@ public:
     void set_sort_folder(const std::string &path);
 
     /**
+     * @brief Returns the optional destination root for categorized files.
+     * @return Destination folder path, or empty when the source folder is used.
+     */
+    std::string get_destination_folder() const;
+    /**
+     * @brief Sets the optional destination root for categorized files.
+     * @param path Destination folder path; empty keeps files under the source folder.
+     */
+    void set_destination_folder(const std::string& path);
+
+    /**
      * @brief Returns whether the consistency-pass feature is enabled.
      * @return True when the consistency pass should be available.
      */
@@ -797,6 +808,7 @@ private:
     bool use_whitelist{false};
     std::string default_sort_folder;
     std::string sort_folder;
+    std::string destination_folder;
     std::string skipped_version;
     std::string whats_new_version_shown;
     bool show_file_explorer{true};
